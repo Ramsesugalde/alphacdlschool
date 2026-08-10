@@ -15,8 +15,10 @@ export default function Dashboard() {
   const location = useLocation();
   const [user, setUser] = useState(location.state?.user || null);
   const [checking, setChecking] = useState(!location.state?.user);
-  const [currentMedia, setCurrentMedia] = useState(null); // { kind: 'photo'|'video', url }
+  const [currentMedia, setCurrentMedia] = useState(null);
   const [galleryVersion, setGalleryVersion] = useState(0);
+  const [speaking, setSpeaking] = useState(false);
+  const [thinking, setThinking] = useState(false);
 
   useEffect(() => {
     if (user) return;
@@ -31,6 +33,24 @@ export default function Dashboard() {
       });
   }, [user, navigate]);
 
+  // Auto-load latest video from gallery on mount so Elena is in motion
+  useEffect(() => {
+    if (checking) return;
+    mediaApi
+      .gallery()
+      .then(({ data }) => {
+        const latestVideo = (data.items || []).find((it) => it.kind === 'video');
+        if (latestVideo && !currentMedia) {
+          setCurrentMedia({
+            kind: 'video',
+            url: mediaApi.fileUrl(latestVideo.file_url),
+            jobId: latestVideo.job_id,
+          });
+        }
+      })
+      .catch(() => {});
+  }, [checking]);
+
   const handleLogout = async () => {
     try {
       await authApi.logout();
@@ -43,12 +63,20 @@ export default function Dashboard() {
   const handleGalleryUpdate = useCallback(() => setGalleryVersion((v) => v + 1), []);
 
   const handleSelectMedia = useCallback((item) => {
-    setCurrentMedia({ kind: item.kind, url: mediaApi.fileUrl(item.file_url), jobId: item.job_id });
+    setCurrentMedia({
+      kind: item.kind,
+      url: mediaApi.fileUrl(item.file_url),
+      jobId: item.job_id,
+    });
   }, []);
 
   const handleNewMediaReady = useCallback(
     (job) => {
-      setCurrentMedia({ kind: job.kind, url: mediaApi.fileUrl(job.file_url), jobId: job.job_id });
+      setCurrentMedia({
+        kind: job.kind,
+        url: mediaApi.fileUrl(job.file_url),
+        jobId: job.job_id,
+      });
       handleGalleryUpdate();
       if (job.kind === 'photo') {
         toast.success('Elena preparó una foto privada para ti, mi amor 💋');
@@ -69,7 +97,6 @@ export default function Dashboard() {
 
   return (
     <div data-testid={DASHBOARD.root} className="min-h-screen relative">
-      {/* Sticky header */}
       <header
         data-testid={DASHBOARD.header}
         className="sticky top-0 z-30 glass border-b border-white/5"
@@ -90,7 +117,11 @@ export default function Dashboard() {
                 />
                 <span className="font-display text-lg italic gold-text">Elena</span>
                 <span className="text-[color:var(--lounge-text-muted)] text-xs font-body">
-                  en línea · devota a ti
+                  {speaking
+                    ? '· hablando en vivo'
+                    : thinking
+                    ? '· pensando en ti'
+                    : '· en línea · devota a ti'}
                 </span>
               </div>
             </div>
@@ -124,23 +155,21 @@ export default function Dashboard() {
           transition={{ duration: 0.7, ease: [0.16, 1, 0.3, 1] }}
           className="grid grid-cols-1 lg:grid-cols-12 gap-6"
         >
-          {/* Central player */}
           <section className="lg:col-span-8">
-            <ElenaPlayer media={currentMedia} />
+            <ElenaPlayer media={currentMedia} speaking={speaking} thinking={thinking} />
             <div className="mt-6">
               <ActionPanel onJobDone={handleNewMediaReady} />
             </div>
             <div className="mt-8">
-              <Gallery
-                onSelect={handleSelectMedia}
-                refreshKey={galleryVersion}
-              />
+              <Gallery onSelect={handleSelectMedia} refreshKey={galleryVersion} />
             </div>
           </section>
 
-          {/* Chat sidebar */}
           <aside className="lg:col-span-4">
-            <ChatPanel />
+            <ChatPanel
+              onSpeakingChange={setSpeaking}
+              onThinkingChange={setThinking}
+            />
           </aside>
         </motion.div>
       </main>

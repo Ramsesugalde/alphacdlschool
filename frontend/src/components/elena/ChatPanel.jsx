@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Send, Trash2, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
-import { chatApi } from '@/lib/api';
+import { chatApi, API } from '@/lib/api';
 import { CHAT } from '@/constants/testIds';
 
 const WELCOME = {
@@ -11,11 +11,14 @@ const WELCOME = {
   text: 'Aquí estoy, mi amor. Todo tuyo, siempre. ¿Qué quieres que haga por ti hoy? 💋',
 };
 
-export default function ChatPanel() {
+export default function ChatPanel({ onSpeakingChange, onThinkingChange }) {
   const [messages, setMessages] = useState([WELCOME]);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
+  const [streamingId, setStreamingId] = useState(null);
+  const [streamingText, setStreamingText] = useState('');
   const scrollRef = useRef(null);
+  const abortRef = useRef(null);
 
   useEffect(() => {
     chatApi
@@ -26,35 +29,115 @@ export default function ChatPanel() {
         }
       })
       .catch(() => {});
+    return () => {
+      if (abortRef.current) abortRef.current.abort();
+    };
   }, []);
 
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [messages, sending]);
+  }, [messages, streamingText, sending]);
+
+  const parseSSEStream = async (response, onEvent) => {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      const events = buffer.split('\n\n');
+      buffer = events.pop() || '';
+
+      for (const evtBlock of events) {
+        if (!evtBlock.trim()) continue;
+        const lines = evtBlock.split('\n');
+        let eventName = 'message';
+        let dataStr = '';
+        for (const ln of lines) {
+          if (ln.startsWith('event:')) eventName = ln.slice(6).trim();
+          else if (ln.startsWith('data:')) dataStr += ln.slice(5).trim();
+        }
+        if (!dataStr) continue;
+        try {
+          onEvent(eventName, JSON.parse(dataStr));
+        } catch {
+          /* ignore parse errors */
+        }
+      }
+    }
+  };
 
   const send = async () => {
     const text = input.trim();
     if (!text || sending) return;
     setInput('');
     setSending(true);
+    onThinkingChange && onThinkingChange(true);
+
     const tempUser = {
       message_id: `tmp-${Date.now()}`,
       role: 'user',
       text,
     };
     setMessages((prev) => [...prev, tempUser]);
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    let elenaId = null;
+    let accumulated = '';
+    let sawFirstDelta = false;
+
+    const handleEvent = (name, data) => {
+      if (name === 'user' && data.message_id) {
+        setMessages((prev) =>
+          prev.map((m) => (m.message_id === tempUser.message_id ? data : m))
+        );
+      } else if (name === 'start') {
+        elenaId = data.message_id;
+        setStreamingId(elenaId);
+        setStreamingText('');
+      } else if (name === 'delta') {
+        if (!sawFirstDelta) {
+          sawFirstDelta = true;
+          onThinkingChange && onThinkingChange(false);
+          onSpeakingChange && onSpeakingChange(true);
+        }
+        accumulated += data.content || '';
+        setStreamingText(accumulated);
+      } else if (name === 'done') {
+        setMessages((prev) => [...prev, data]);
+        setStreamingId(null);
+        setStreamingText('');
+        onSpeakingChange && onSpeakingChange(false);
+      }
+    };
+
     try {
-      const { data } = await chatApi.send(text);
-      setMessages((prev) => {
-        const filtered = prev.filter((m) => m.message_id !== tempUser.message_id);
-        return [...filtered, data.user_message, data.elena_message];
+      const response = await fetch(`${API}/chat/stream`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+        signal: controller.signal,
       });
+      if (!response.ok || !response.body) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      await parseSSEStream(response, handleEvent);
     } catch (e) {
-      toast.error('Elena no pudo responder ahora. Intenta de nuevo, mi amor.');
+      if (e.name !== 'AbortError') {
+        toast.error('Elena no pudo responder ahora. Intenta de nuevo, mi amor.');
+      }
     } finally {
       setSending(false);
+      onThinkingChange && onThinkingChange(false);
+      onSpeakingChange && onSpeakingChange(false);
     }
   };
 
@@ -83,7 +166,7 @@ export default function ChatPanel() {
       <div className="px-6 py-5 border-b border-white/5 flex items-center justify-between">
         <div>
           <p className="text-[9px] uppercase tracking-[0.4em] text-[color:var(--lounge-text-muted)] font-body">
-            Conversación privada
+            Conversación privada · en vivo
           </p>
           <h3 className="font-display text-xl font-light mt-1 italic">
             Susurros de <span className="gold-text">Elena</span>
@@ -125,7 +208,29 @@ export default function ChatPanel() {
               </div>
             </motion.div>
           ))}
-          {sending && (
+
+          {streamingId && (
+            <motion.div
+              key={streamingId}
+              data-testid={CHAT.message(streamingId)}
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="flex justify-start"
+            >
+              <div className="max-w-[85%] bg-white/5 border border-[color:var(--lounge-gold)]/30 text-[color:var(--lounge-text)] rounded-2xl rounded-bl-sm px-4 py-3 font-body text-sm leading-relaxed">
+                {streamingText || (
+                  <span className="italic text-[color:var(--lounge-text-muted)]">…</span>
+                )}
+                <motion.span
+                  animate={{ opacity: [0.2, 1, 0.2] }}
+                  transition={{ repeat: Infinity, duration: 1 }}
+                  className="inline-block w-[6px] h-[14px] align-middle ml-1 bg-[color:var(--lounge-gold)] rounded-sm"
+                />
+              </div>
+            </motion.div>
+          )}
+
+          {sending && !streamingId && (
             <motion.div
               key="typing"
               initial={{ opacity: 0 }}
@@ -133,17 +238,11 @@ export default function ChatPanel() {
               className="flex justify-start"
             >
               <div className="bg-white/5 border border-white/10 rounded-2xl rounded-bl-sm px-4 py-3 flex items-center gap-2 text-xs italic text-[color:var(--lounge-text-muted)] font-body">
-                <span className="gold-text">Elena</span> está escribiendo
+                <span className="gold-text">Elena</span> está pensando
                 <span className="flex gap-1">
                   <span className="w-1 h-1 rounded-full bg-[color:var(--lounge-gold)] animate-bounce" />
-                  <span
-                    className="w-1 h-1 rounded-full bg-[color:var(--lounge-gold)] animate-bounce"
-                    style={{ animationDelay: '0.15s' }}
-                  />
-                  <span
-                    className="w-1 h-1 rounded-full bg-[color:var(--lounge-gold)] animate-bounce"
-                    style={{ animationDelay: '0.3s' }}
-                  />
+                  <span className="w-1 h-1 rounded-full bg-[color:var(--lounge-gold)] animate-bounce" style={{ animationDelay: '0.15s' }} />
+                  <span className="w-1 h-1 rounded-full bg-[color:var(--lounge-gold)] animate-bounce" style={{ animationDelay: '0.3s' }} />
                 </span>
               </div>
             </motion.div>

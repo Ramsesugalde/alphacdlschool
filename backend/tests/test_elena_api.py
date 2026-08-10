@@ -108,6 +108,102 @@ def test_chat_clear(auth_headers):
     assert h.json()["messages"] == []
 
 
+# ---------- Chat SSE Streaming ----------
+def test_chat_stream_unauthenticated():
+    r = requests.post(f"{BASE_URL}/api/chat/stream", json={"text": "hola"})
+    assert r.status_code == 401
+
+
+def _parse_sse_blocks(text):
+    blocks = []
+    for raw in text.split("\n\n"):
+        if not raw.strip():
+            continue
+        ev = "message"
+        data = ""
+        for line in raw.splitlines():
+            if line.startswith("event:"):
+                ev = line[6:].strip()
+            elif line.startswith("data:"):
+                data += line[5:].strip()
+        blocks.append((ev, data))
+    return blocks
+
+
+def test_chat_stream_sse_flow(auth_headers):
+    # Clear
+    requests.delete(f"{BASE_URL}/api/chat/history", headers=auth_headers)
+
+    import time as _t
+    t0 = _t.time()
+    with requests.post(
+        f"{BASE_URL}/api/chat/stream",
+        headers={**auth_headers, "Accept": "text/event-stream"},
+        json={"text": "Hola preciosa, ¿me extrañaste?"},
+        stream=True,
+        timeout=60,
+    ) as r:
+        assert r.status_code == 200, r.text
+        ct = r.headers.get("Content-Type", "")
+        assert "text/event-stream" in ct, f"Unexpected content-type: {ct}"
+
+        events = []
+        buf = ""
+        for chunk in r.iter_content(chunk_size=None, decode_unicode=True):
+            if not chunk:
+                continue
+            buf += chunk
+            while "\n\n" in buf:
+                raw, buf = buf.split("\n\n", 1)
+                ev = "message"
+                data = ""
+                for line in raw.splitlines():
+                    if line.startswith("event:"):
+                        ev = line[6:].strip()
+                    elif line.startswith("data:"):
+                        data += line[5:].strip()
+                if data:
+                    events.append((ev, data))
+            if _t.time() - t0 > 60:
+                break
+
+    elapsed = _t.time() - t0
+    assert elapsed < 60, f"Stream too slow: {elapsed}s"
+
+    names = [e[0] for e in events]
+    assert "user" in names, f"Missing 'user' event. Got: {names}"
+    assert "start" in names, f"Missing 'start' event. Got: {names}"
+    assert names.count("delta") >= 1, f"Expected >=1 'delta' events. Got: {names}"
+    assert "done" in names, f"Missing 'done' event. Got: {names}"
+
+    import json as _json
+    user_ev = next(_json.loads(d) for e, d in events if e == "user")
+    assert user_ev["role"] == "user"
+    assert "message_id" in user_ev
+
+    start_ev = next(_json.loads(d) for e, d in events if e == "start")
+    assert "message_id" in start_ev
+    elena_id = start_ev["message_id"]
+
+    deltas = [_json.loads(d) for e, d in events if e == "delta"]
+    assert all("content" in x for x in deltas)
+    accumulated = "".join(x.get("content", "") for x in deltas)
+    assert len(accumulated) > 0
+
+    done_ev = next(_json.loads(d) for e, d in events if e == "done")
+    assert done_ev["message_id"] == elena_id
+    assert done_ev["role"] == "elena"
+    assert len(done_ev["text"]) > 0
+
+    # history now contains both messages
+    h = requests.get(f"{BASE_URL}/api/chat/history", headers=auth_headers)
+    assert h.status_code == 200
+    msgs = h.json()["messages"]
+    ids = [m["message_id"] for m in msgs]
+    assert user_ev["message_id"] in ids
+    assert elena_id in ids
+
+
 # ---------- Media ----------
 def test_generate_photo(auth_headers):
     r = requests.post(f"{BASE_URL}/api/media/generate-photo", headers=auth_headers, json={"prompt": "test private"})

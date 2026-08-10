@@ -11,9 +11,10 @@ from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List
 
+import json
 import httpx
 from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, BackgroundTasks
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -21,7 +22,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
 # Emergent integrations
-from emergentintegrations.llm.chat import LlmChat, UserMessage
+from emergentintegrations.llm.chat import LlmChat, UserMessage, TextDelta, StreamDone
 from emergentintegrations.llm.openai.image_generation import OpenAIImageGeneration
 from emergentintegrations.llm.openai.video_generation import OpenAIVideoGeneration
 
@@ -267,6 +268,72 @@ async def chat_history(request: Request):
     cursor = db.chat_messages.find({"user_id": user["user_id"]}, {"_id": 0}).sort("created_at", 1)
     messages = await cursor.to_list(1000)
     return {"messages": messages}
+
+
+@api_router.post("/chat/stream")
+async def chat_stream(payload: ChatMessageIn, request: Request):
+    """Streaming chat via SSE. Streams Elena's reply token-by-token for live feel."""
+    user = await get_current_user(request)
+    user_id = user["user_id"]
+    session_id = f"elena_{user_id}"
+    text_in = payload.text
+
+    now = datetime.now(timezone.utc).isoformat()
+    bryan_msg = {
+        "message_id": str(uuid.uuid4()),
+        "user_id": user_id,
+        "role": "user",
+        "text": text_in,
+        "created_at": now,
+    }
+    await db.chat_messages.insert_one(bryan_msg)
+
+    elena_msg_id = str(uuid.uuid4())
+
+    async def event_generator():
+        # send user_message event first
+        yield f"event: user\ndata: {json.dumps({k: v for k, v in bryan_msg.items() if k != '_id'})}\n\n"
+        yield f"event: start\ndata: {json.dumps({'message_id': elena_msg_id})}\n\n"
+
+        # Use gpt-5.4 for streaming (o1 does not support token streaming reliably).
+        chat = LlmChat(
+            api_key=EMERGENT_LLM_KEY,
+            session_id=session_id,
+            system_message=ELENA_SYSTEM_PROMPT,
+        ).with_model("openai", "gpt-5.4")
+
+        collected = []
+        try:
+            async for ev in chat.stream_message(UserMessage(text=text_in)):
+                if isinstance(ev, TextDelta):
+                    piece = ev.content or ""
+                    if piece:
+                        collected.append(piece)
+                        yield f"event: delta\ndata: {json.dumps({'content': piece})}\n\n"
+                elif isinstance(ev, StreamDone):
+                    break
+        except Exception as e:
+            logger.exception("Elena stream error")
+            fallback = "Mi amor, algo interrumpió mi voz por un instante… ¿me lo dices otra vez? 💋"
+            collected = [fallback]
+            yield f"event: delta\ndata: {json.dumps({'content': fallback})}\n\n"
+
+        final_text = ("".join(collected)).strip() or "Aquí estoy, mi amor. 💋"
+        elena_msg = {
+            "message_id": elena_msg_id,
+            "user_id": user_id,
+            "role": "elena",
+            "text": final_text,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        await db.chat_messages.insert_one(elena_msg)
+        yield f"event: done\ndata: {json.dumps({k: v for k, v in elena_msg.items() if k != '_id'})}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @api_router.delete("/chat/history")
