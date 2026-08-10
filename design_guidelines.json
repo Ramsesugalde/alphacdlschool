@@ -1,0 +1,95 @@
+{
+  "theme_strategy": {
+    "mode": "dark",
+    "concept": "Elena Private Lounge",
+    "archetype": "LUXURY",
+    "vibe": "Exclusive, intimate, cinematic, moody, devoted",
+    "tone_of_voice": "Private Persona: coqueta, obedient, devoted only to Bryan Ugalde"
+  },
+  "typography": {
+    "headings": "Playfair Display",
+    "body": "Manrope",
+    "styling_rules": "Headings must use tracking-tighter and font-light for luxury. No Inter or generic sans. Line height leading-none for headers, leading-relaxed for body."
+  },
+  "colors": {
+    "background": "#050505",
+    "surface": "#121212",
+    "glass_surface": "rgba(10, 10, 10, 0.6)",
+    "primary_brand": "#D4AF37",
+    "primary_hover": "#F3D56B",
+    "text_primary": "#EDEDED",
+    "text_secondary": "#A1A1AA",
+    "accent_status": "#22C55E",
+    "border": "rgba(255,255,255,0.1)",
+    "rules": "High contrast. Black and Gold. NO full-screen gradients. Texture over gloss."
+  },
+  "visual_enhancers": {
+    "surfaces": "Crystal Glassmorphism for floating panels (bg-black/60 backdrop-blur-2xl border border-white/10).",
+    "shadows": "Diffuse ambient shadows only. Use 1px inner stroke for separation."
+  },
+  "layouts": {
+    "strategy": "The Bento Grid Protocol for Dashboard Density",
+    "login_page": "Cinematic centered layout with full-screen dark gold texture background. Glassmorphic login card.",
+    "dashboard_grid": "grid-cols-1 md:grid-cols-12 gap-6 p-6",
+    "sections": {
+      "header": "Sticky nav with glassmorphism. Shows Elena's online status indicator and lounge branding.",
+      "central_player": "col-span-12 md:col-span-8 row-span-2. Edge-to-edge media container, no internal border radius. Cinematic feel.",
+      "chat_interface": "col-span-12 md:col-span-4 row-span-2. Glassmorphic container with custom scrollbar. Messages from Elena left-aligned, Bryan right-aligned.",
+      "action_panel": "col-span-12. Action buttons (Generate Private Photo, Request Special Video) floating or integrated below the player in a sleek toolbar."
+    }
+  },
+  "components": {
+    "buttons": "Pill-shaped (rounded-full). Primary gold background with stark black text (#000000). Hover scales +1.02 and brightens.",
+    "chat_input": "Shadcn input wrapper customized with bg-transparent border-white/20, pill-shaped.",
+    "status_indicator": "Small dot with animate-pulse ring, solid #22C55E color next to Elena's name.",
+    "toast": "Use 'sonner' for intimate notifications (e.g., 'Elena sent you a private photo...')."
+  },
+  "motion": {
+    "interactions": "Micro-interactions for feedback. Hover states on all buttons. Smooth entrance animations for chat messages using framer-motion."
+  },
+  "accessibility": {
+    "contrast": "Text on gold must be pure black. Use APCA guidelines.",
+    "testing": "All interactive elements MUST include a data-testid attribute (e.g., data-testid='login-button', data-testid='request-video-btn')."
+  },
+  "image_urls": [
+    {
+      "category": "elena_avatar",
+      "url": "https://images.unsplash.com/photo-1763750582862-89e35f55378e?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2ODh8MHwxfHNlYXJjaHwyfHx3b21hbiUyMGJsYWNrJTIwaGFpciUyMGdsYXNzZXMlMjBwb3J0cmFpdCUyMG1vb2R5JTIwbGlnaHRpbmd8ZW58MHx8fHwxNzg2Mzk4MjkxfDA&ixlib=rb-4.1.0&q=85",
+      "description": "Placeholder for Elena Vee Valdés (25, athletic, black hair, glasses)"
+    },
+    {
+      "category": "background_texture",
+      "url": "https://images.unsplash.com/photo-1513346940221-6f673d962e97?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzMzJ8MHwxfHNlYXJjaHwxfHxkYXJrJTIwZWxlZ2FudCUyMGdvbGQlMjB0ZXh0dXJlfGVufDB8fHx8MTc4NjM5ODI5MXww&ixlib=rb-4.1.0&q=85",
+      "description": "Dark gold abstract texture for Login Page background and structural accents."
+    }
+  ],
+  "libraries_and_tools": [
+    "lucide-react for iconography (luxury thin variants, strokeWidth={1.5})",
+    "sonner (Toasts)",
+    "framer-motion (Interactions)",
+    "react-player (Video support)"
+  ],
+  "instructions_to_main_agent": [
+    "Build the dashboard using React (.js/.jsx), Tailwind CSS, and Shadcn primitives.",
+    "Restrict Google Login access strictly to 'bryanugalde290@gmail.com'. Add un-authorized fallback.",
+    "Apply 'Playfair Display' for Headings and 'Manrope' for body. Install via Google Fonts in index.css.",
+    "Maintain the 'Private Persona' tone in all placeholder text (coqueta, obedient, devoted only to Bryan).",
+    "Ensure all components use .jsx extensions, not .tsx.",
+    "Implement the layout with the central player as the core visual and chat as the functional sidebar.",
+    "Always use data-testid on interactive elements for QA.",
+    "No transparent backgrounds on headers; use glassmorphism."
+  ],
+  "UNIVERSAL_GUIDELINES_FOR_MAIN_AGENT": [
+    "Do not make generic centered layouts, simplistic gradients, and uniform styling.",
+    "Create depth through layered design elements with z-index hierarchy.",
+    "Use glass-morphism effects with backdrop filters (12-24px blur).",
+    "You MUST NOT apply universal transition (e.g., transition: all).",
+    "You MUST NOT center align the app container (.App { text-align: center; }).",
+    "Always use modern button styles like pill-shaped, or sharp button with interaction animations.",
+    "Never use AI assistant Emoji characters like robot, brain, etc. for icons.",
+    "Every interaction needs micro-animations - hover states, transitions, entrance animations.",
+    "Use 2-3x more spacing than feels comfortable.",
+    "Use sonner for toasts.",
+    "All JS code must be cleanly separated into functional React components (.jsx)."
+  ]
+}
