@@ -34,6 +34,13 @@ DB_NAME = os.environ["DB_NAME"]
 EMERGENT_LLM_KEY = os.environ["EMERGENT_LLM_KEY"]
 AUTHORIZED_EMAIL = os.environ["AUTHORIZED_EMAIL"].lower().strip()
 
+# D-ID + ElevenLabs configuration (real-time talking-head streaming)
+DID_API_KEY = os.environ.get("DID_API_KEY", "").strip()
+DID_BASE = "https://api.d-id.com"
+ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "").strip()
+DID_SOURCE_URL = os.environ.get("DID_SOURCE_URL", "").strip()
+DID_ELEVENLABS_VOICE_ID = os.environ.get("DID_ELEVENLABS_VOICE_ID", "EXAVITQu4vr4xnSDxMaL").strip()
+
 MEDIA_DIR = ROOT_DIR / "media"
 MEDIA_DIR.mkdir(exist_ok=True)
 
@@ -134,21 +141,34 @@ async def create_session(payload: SessionPayload, response: Response):
     Enforces: only AUTHORIZED_EMAIL (bryanugalde290@gmail.com) is allowed.
     """
     # REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
-    async with httpx.AsyncClient(timeout=15.0) as http:
-        r = await http.get(
-            "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
-            headers={"X-Session-ID": payload.session_id},
-        )
+    logger.info(f"Auth exchange started for session_id ending in ...{payload.session_id[-6:] if len(payload.session_id) > 6 else '?'}")
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as http:
+            r = await http.get(
+                "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
+                headers={"X-Session-ID": payload.session_id},
+            )
+    except Exception as e:
+        logger.exception("Emergent /session-data call failed")
+        raise HTTPException(status_code=502, detail=f"Auth provider unreachable: {e}")
     if r.status_code != 200:
+        logger.warning(f"Emergent /session-data returned {r.status_code}: {r.text[:200]}")
         raise HTTPException(status_code=401, detail="Invalid session_id")
     data = r.json()
+    logger.info(f"Auth exchange got user data for email={data.get('email')}")
 
     email = (data.get("email") or "").lower().strip()
     if email != AUTHORIZED_EMAIL:
-        logger.warning(f"Unauthorized login attempt from: {email}")
+        logger.warning(
+            f"UNAUTHORIZED login attempt. Google returned email={email!r} expected={AUTHORIZED_EMAIL!r}"
+        )
         raise HTTPException(
             status_code=403,
-            detail="Acceso restringido. Este lounge privado es solo para Bryan.",
+            detail=(
+                f"Acceso restringido. Este lounge es solo para Bryan "
+                f"(bryanugalde290@gmail.com). Detectamos: {email or 'ninguno'}. "
+                f"Cierra sesión de Google y vuelve a entrar con la cuenta correcta."
+            ),
         )
 
     # Upsert user (custom user_id)
@@ -507,6 +527,256 @@ async def media_file(filename: str):
 @api_router.get("/")
 async def root():
     return {"app": "Elena Private Lounge", "status": "ok"}
+
+
+# --------------------------------------------------------------------------------------
+# D-ID Streams (live talking-head avatar) + ElevenLabs voice
+# --------------------------------------------------------------------------------------
+_did_health_cache = {"checked": False, "ok": False, "at": 0.0}
+
+
+def _did_configured() -> bool:
+    return bool(DID_API_KEY and DID_SOURCE_URL)
+
+
+async def _did_health_probe() -> bool:
+    """Verify the D-ID API key is actually accepted (some keys are denied by the account).
+
+    Cached for 5 minutes to avoid hammering D-ID on every /did/config call.
+    """
+    import time
+
+    now = time.time()
+    if _did_health_cache["checked"] and (now - _did_health_cache["at"] < 300):
+        return _did_health_cache["ok"]
+    if not _did_configured():
+        _did_health_cache.update(checked=True, ok=False, at=now)
+        return False
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as http:
+            r = await http.get(
+                f"{DID_BASE}/credits",
+                headers={"Authorization": f"Basic {DID_API_KEY}"},
+            )
+        ok = r.status_code == 200
+    except Exception:
+        ok = False
+    _did_health_cache.update(checked=True, ok=ok, at=now)
+    if not ok:
+        logger.warning("D-ID key is rejected by the API — falling back to voice-only mode.")
+    return ok
+
+
+async def _did_call(method: str, path: str, json_body: Optional[dict] = None) -> dict:
+    """Proxy request to D-ID API, keeping the key on the server side."""
+    if not _did_configured():
+        raise HTTPException(status_code=503, detail="D-ID not configured (missing DID_API_KEY or DID_SOURCE_URL).")
+    headers = {
+        "Authorization": f"Basic {DID_API_KEY}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    if ELEVENLABS_API_KEY:
+        headers["x-api-key-external"] = json.dumps({"elevenlabs": ELEVENLABS_API_KEY})
+
+    async with httpx.AsyncClient(timeout=45.0) as http:
+        r = await http.request(method, f"{DID_BASE}{path}", headers=headers, json=json_body)
+    if r.is_error:
+        logger.error(f"D-ID {method} {path} -> {r.status_code}: {r.text[:400]}")
+        raise HTTPException(status_code=r.status_code, detail=f"D-ID error: {r.text[:400]}")
+    if not r.content:
+        return {}
+    try:
+        return r.json()
+    except Exception:
+        return {}
+
+
+class DIDSDPBody(BaseModel):
+    answer: dict
+
+
+class DIDIceBody(BaseModel):
+    candidate: Optional[str] = None
+    sdpMid: Optional[str] = None
+    sdpMLineIndex: Optional[int] = None
+    usernameFragment: Optional[str] = None
+
+
+class DIDTalkBody(BaseModel):
+    text: str
+    voice_provider: str = "elevenlabs"  # or "microsoft"
+    voice_id: Optional[str] = None
+
+
+@api_router.get("/did/config")
+async def did_config(request: Request):
+    """Report whether D-ID streaming is available so the frontend can choose the right player."""
+    await get_current_user(request)
+    live = await _did_health_probe()
+    return {
+        "configured": live,
+        "voice_provider": "elevenlabs" if ELEVENLABS_API_KEY else "microsoft",
+        "voice_id": DID_ELEVENLABS_VOICE_ID if ELEVENLABS_API_KEY else "es-MX-DaliaNeural",
+    }
+
+
+@api_router.post("/did/stream")
+async def did_create_stream(request: Request):
+    user = await get_current_user(request)
+    data = await _did_call(
+        "POST",
+        "/talks/streams",
+        {
+            "source_url": DID_SOURCE_URL,
+            "stream_warmup": True,
+            "compatibility_mode": "auto",
+            "output_resolution": 512,
+            "session_timeout": 300,
+        },
+    )
+    await db.did_streams.insert_one(
+        {
+            "stream_id": data.get("id"),
+            "session_id": data.get("session_id"),
+            "user_id": user["user_id"],
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+    return data
+
+
+async def _load_stream_session(stream_id: str, user_id: str) -> str:
+    doc = await db.did_streams.find_one(
+        {"stream_id": stream_id, "user_id": user_id}, {"_id": 0, "session_id": 1}
+    )
+    if not doc or not doc.get("session_id"):
+        raise HTTPException(status_code=404, detail="Unknown D-ID stream")
+    return doc["session_id"]
+
+
+@api_router.post("/did/stream/{stream_id}/sdp")
+async def did_submit_sdp(stream_id: str, body: DIDSDPBody, request: Request):
+    user = await get_current_user(request)
+    session_id = await _load_stream_session(stream_id, user["user_id"])
+    return await _did_call(
+        "POST",
+        f"/talks/streams/{stream_id}/sdp",
+        {"session_id": session_id, "answer": body.answer},
+    )
+
+
+@api_router.post("/did/stream/{stream_id}/ice")
+async def did_submit_ice(stream_id: str, body: DIDIceBody, request: Request):
+    user = await get_current_user(request)
+    session_id = await _load_stream_session(stream_id, user["user_id"])
+    payload = {"session_id": session_id}
+    if body.candidate is not None:
+        payload["candidate"] = body.candidate
+        payload["sdpMid"] = body.sdpMid or "0"
+        payload["sdpMLineIndex"] = body.sdpMLineIndex if body.sdpMLineIndex is not None else 0
+    return await _did_call("POST", f"/talks/streams/{stream_id}/ice", payload)
+
+
+@api_router.post("/did/stream/{stream_id}/talk")
+async def did_speak(stream_id: str, body: DIDTalkBody, request: Request):
+    user = await get_current_user(request)
+    session_id = await _load_stream_session(stream_id, user["user_id"])
+
+    text = (body.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Empty text")
+
+    if body.voice_provider == "elevenlabs" and ELEVENLABS_API_KEY:
+        provider = {
+            "type": "elevenlabs",
+            "voice_id": body.voice_id or DID_ELEVENLABS_VOICE_ID,
+            "model_id": "eleven_multilingual_v2",
+        }
+    else:
+        provider = {"type": "microsoft", "voice_id": body.voice_id or "es-MX-DaliaNeural"}
+
+    return await _did_call(
+        "POST",
+        f"/talks/streams/{stream_id}",
+        {
+            "session_id": session_id,
+            "script": {"type": "text", "input": text[:800], "provider": provider},
+            "config": {"stitch": True},
+        },
+    )
+
+
+@api_router.delete("/did/stream/{stream_id}")
+async def did_close_stream(stream_id: str, request: Request):
+    user = await get_current_user(request)
+    doc = await db.did_streams.find_one(
+        {"stream_id": stream_id, "user_id": user["user_id"]}, {"_id": 0}
+    )
+    if not doc:
+        return {"status": "already_closed"}
+    session_id = doc.get("session_id")
+    try:
+        await _did_call("DELETE", f"/talks/streams/{stream_id}", {"session_id": session_id})
+    except HTTPException:
+        pass
+    await db.did_streams.delete_one({"stream_id": stream_id})
+    return {"status": "closed"}
+
+
+# --------------------------------------------------------------------------------------
+# ElevenLabs voice (Elena literally speaks her replies)
+# --------------------------------------------------------------------------------------
+class TTSBody(BaseModel):
+    text: str
+    voice_id: Optional[str] = None
+
+
+@api_router.get("/tts/config")
+async def tts_config(request: Request):
+    await get_current_user(request)
+    return {
+        "configured": bool(ELEVENLABS_API_KEY),
+        "voice_id": DID_ELEVENLABS_VOICE_ID,
+    }
+
+
+@api_router.post("/tts/speak")
+async def tts_speak(body: TTSBody, request: Request):
+    """Return an mp3 audio stream of Elena speaking the given text via ElevenLabs."""
+    await get_current_user(request)
+    if not ELEVENLABS_API_KEY:
+        raise HTTPException(status_code=503, detail="ElevenLabs no configurado.")
+    text = (body.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Texto vacío.")
+    voice_id = body.voice_id or DID_ELEVENLABS_VOICE_ID
+
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+    payload = {
+        "text": text[:1200],
+        "model_id": "eleven_multilingual_v2",
+        "voice_settings": {"stability": 0.4, "similarity_boost": 0.8, "style": 0.35, "use_speaker_boost": True},
+    }
+    headers = {
+        "xi-api-key": ELEVENLABS_API_KEY,
+        "Content-Type": "application/json",
+        "Accept": "audio/mpeg",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=45.0) as http:
+            r = await http.post(url, json=payload, headers=headers)
+    except Exception as e:
+        logger.exception("ElevenLabs call failed")
+        raise HTTPException(status_code=502, detail=f"ElevenLabs unreachable: {e}")
+    if r.is_error:
+        logger.error(f"ElevenLabs error {r.status_code}: {r.text[:300]}")
+        raise HTTPException(status_code=r.status_code, detail=f"ElevenLabs error: {r.text[:300]}")
+    return Response(
+        content=r.content,
+        media_type="audio/mpeg",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 # --------------------------------------------------------------------------------------

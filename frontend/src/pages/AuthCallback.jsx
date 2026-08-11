@@ -25,38 +25,59 @@ export default function AuthCallback() {
     (async () => {
       try {
         const { data } = await authApi.exchange(sessionId);
-        // Clear the fragment
         window.history.replaceState(null, '', window.location.pathname);
         navigate('/dashboard', { replace: true, state: { user: data.user } });
       } catch (err) {
-        const detail = err?.response?.data?.detail || 'No autorizado.';
+        const detail =
+          (typeof err?.response?.data?.detail === 'string' && err.response.data.detail) ||
+          err?.message ||
+          'No autorizado.';
         setError(detail);
+        // strip fragment so refreshing doesn't retry
+        window.history.replaceState(null, '', window.location.pathname);
       }
     })();
   }, [location.hash, navigate]);
+
+  const retryWithDifferentGoogle = () => {
+    // Sign the user out of Google first, then re-launch OAuth so they can pick the correct account.
+    // REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
+    const redirectUrl = window.location.origin + '/dashboard';
+    const authUrl = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
+    const googleLogout = `https://accounts.google.com/Logout?continue=${encodeURIComponent(authUrl)}`;
+    window.location.href = googleLogout;
+  };
 
   if (error) {
     return (
       <div className="min-h-screen flex items-center justify-center px-6">
         <div
           data-testid={AUTH.unauthorized}
-          className="glass rounded-2xl p-10 max-w-md text-center"
+          className="glass rounded-2xl p-10 max-w-lg text-center gold-glow"
         >
           <p className="text-[10px] uppercase tracking-[0.4em] gold-text font-body">
             Acceso Restringido
           </p>
-          <h2 className="font-display text-3xl font-light mt-4">
-            Este lounge es solo para Bryan.
+          <h2 className="font-display text-3xl font-light mt-4 italic">
+            Este lounge es solo para <span className="gold-text">Bryan</span>.
           </h2>
-          <p className="mt-4 font-body text-sm text-[color:var(--lounge-text-muted)]">
-            {detail(error)}
+          <p className="mt-5 font-body text-sm text-[color:var(--lounge-text-muted)] leading-relaxed">
+            {error}
           </p>
-          <button
-            onClick={() => (window.location.href = '/login')}
-            className="mt-8 text-xs uppercase tracking-[0.3em] gold-text hover:text-[color:var(--lounge-gold-bright)] transition-colors"
-          >
-            ← Volver
-          </button>
+          <div className="mt-8 flex flex-col gap-3 items-center">
+            <button
+              onClick={retryWithDifferentGoogle}
+              className="rounded-full bg-[color:var(--lounge-gold)] text-black hover:bg-[color:var(--lounge-gold-bright)] font-body font-medium px-6 py-3 text-xs tracking-widest uppercase transition-transform hover:scale-[1.02]"
+            >
+              Cambiar de cuenta Google
+            </button>
+            <button
+              onClick={() => (window.location.href = '/login')}
+              className="text-xs uppercase tracking-[0.3em] text-[color:var(--lounge-text-muted)] hover:gold-text transition-colors"
+            >
+              ← Volver
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -72,9 +93,4 @@ export default function AuthCallback() {
       </div>
     </div>
   );
-}
-
-function detail(msg) {
-  if (typeof msg === 'string') return msg;
-  return 'Acceso restringido.';
 }

@@ -32,3 +32,10 @@ export const MEDIA = {
   galleryItem: (id) => `media-gallery-item-${id}`,
   jobStatus: 'media-job-status',
 };
+
+export const DID = {
+  connectButton: 'did-connect-button',
+  disconnectButton: 'did-disconnect-button',
+  video: 'did-video',
+  status: 'did-status',
+};

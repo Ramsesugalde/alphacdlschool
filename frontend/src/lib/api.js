@@ -28,3 +28,28 @@ export const mediaApi = {
   gallery: () => api.get('/media/gallery'),
   fileUrl: (fileUrl) => `${BACKEND_URL}${fileUrl}`,
 };
+
+export const didApi = {
+  config: () => api.get('/did/config'),
+  createStream: () => api.post('/did/stream'),
+  submitSdp: (streamId, answer) => api.post(`/did/stream/${streamId}/sdp`, { answer }),
+  submitIce: (streamId, candidate) => api.post(`/did/stream/${streamId}/ice`, candidate || {}),
+  speak: (streamId, text, voiceId) =>
+    api.post(`/did/stream/${streamId}/talk`, { text, voice_provider: 'elevenlabs', voice_id: voiceId }),
+  close: (streamId) => api.delete(`/did/stream/${streamId}`),
+};
+
+export const ttsApi = {
+  config: () => api.get('/tts/config'),
+  speakUrl: () => `${API}/tts/speak`,
+  speak: async (text, voiceId) => {
+    const res = await fetch(`${API}/tts/speak`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, voice_id: voiceId }),
+    });
+    if (!res.ok) throw new Error(`TTS ${res.status}`);
+    return res.blob();
+  },
+};

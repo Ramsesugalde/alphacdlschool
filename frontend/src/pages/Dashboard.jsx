@@ -1,11 +1,12 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { LogOut, Sparkles } from 'lucide-react';
+import { LogOut, Sparkles, Volume2, VolumeX } from 'lucide-react';
 import { toast } from 'sonner';
-import { authApi, mediaApi } from '@/lib/api';
+import { authApi, mediaApi, didApi, ttsApi } from '@/lib/api';
 import { DASHBOARD } from '@/constants/testIds';
 import ElenaPlayer from '@/components/elena/ElenaPlayer';
+import DIDAvatarPlayer from '@/components/elena/DIDAvatarPlayer';
 import ChatPanel from '@/components/elena/ChatPanel';
 import ActionPanel from '@/components/elena/ActionPanel';
 import Gallery from '@/components/elena/Gallery';
@@ -19,6 +20,13 @@ export default function Dashboard() {
   const [galleryVersion, setGalleryVersion] = useState(0);
   const [speaking, setSpeaking] = useState(false);
   const [thinking, setThinking] = useState(false);
+  const [didAvailable, setDidAvailable] = useState(false);
+  const [didStatus, setDidStatus] = useState('idle');
+  const [ttsAvailable, setTtsAvailable] = useState(false);
+  const [voiceEnabled, setVoiceEnabled] = useState(true);
+  const didRef = useRef(null);
+  const audioRef = useRef(null);
+  const audioUrlRef = useRef(null);
 
   useEffect(() => {
     if (user) return;
@@ -33,9 +41,18 @@ export default function Dashboard() {
       });
   }, [user, navigate]);
 
-  // Auto-load latest video from gallery on mount so Elena is in motion
   useEffect(() => {
     if (checking) return;
+    // Discover D-ID + TTS availability
+    didApi
+      .config()
+      .then(({ data }) => setDidAvailable(!!data.configured))
+      .catch(() => setDidAvailable(false));
+    ttsApi
+      .config()
+      .then(({ data }) => setTtsAvailable(!!data.configured))
+      .catch(() => setTtsAvailable(false));
+
     mediaApi
       .gallery()
       .then(({ data }) => {
@@ -49,7 +66,7 @@ export default function Dashboard() {
         }
       })
       .catch(() => {});
-  }, [checking]);
+  }, [checking, currentMedia]);
 
   const handleLogout = async () => {
     try {
@@ -87,6 +104,53 @@ export default function Dashboard() {
     [handleGalleryUpdate]
   );
 
+  // Called by ChatPanel when Elena's reply is fully composed.
+  // Prefers D-ID live avatar; otherwise plays ElevenLabs TTS audio synced with speaking animation.
+  const handleElenaReply = useCallback(
+    async (text) => {
+      if (didRef.current && didRef.current.isLive && didRef.current.isLive()) {
+        await didRef.current.speak(text);
+        return;
+      }
+      if (!ttsAvailable || !voiceEnabled) return;
+      try {
+        const blob = await ttsApi.speak(text);
+        if (audioUrlRef.current) {
+          URL.revokeObjectURL(audioUrlRef.current);
+        }
+        const url = URL.createObjectURL(blob);
+        audioUrlRef.current = url;
+        if (!audioRef.current) {
+          audioRef.current = new Audio();
+        }
+        audioRef.current.src = url;
+        audioRef.current.onplay = () => setSpeaking(true);
+        audioRef.current.onended = () => setSpeaking(false);
+        audioRef.current.onerror = () => setSpeaking(false);
+        try {
+          await audioRef.current.play();
+        } catch (e) {
+          // Autoplay policy may block; user will hear it after any user gesture.
+        }
+      } catch (e) {
+        // fail silently — chat still works
+      }
+    },
+    [ttsAvailable, voiceEnabled]
+  );
+
+  useEffect(() => {
+    return () => {
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.src = '';
+      }
+      if (audioUrlRef.current) {
+        URL.revokeObjectURL(audioUrlRef.current);
+      }
+    };
+  }, []);
+
   if (checking) {
     return (
       <div className="min-h-screen flex items-center justify-center text-[color:var(--lounge-text-muted)] font-body text-xs tracking-[0.4em] uppercase">
@@ -94,6 +158,20 @@ export default function Dashboard() {
       </div>
     );
   }
+
+  const headerStatusText = didStatus === 'live'
+    ? '· en vivo con voz ElevenLabs'
+    : ttsAvailable && voiceEnabled
+    ? speaking
+    ? '· hablando con voz real'
+    : thinking
+    ? '· pensando en ti'
+    : '· en línea · voz activa'
+    : speaking
+    ? '· hablando en vivo'
+    : thinking
+    ? '· pensando en ti'
+    : '· en línea · devota a ti';
 
   return (
     <div data-testid={DASHBOARD.root} className="min-h-screen relative">
@@ -117,17 +195,34 @@ export default function Dashboard() {
                 />
                 <span className="font-display text-lg italic gold-text">Elena</span>
                 <span className="text-[color:var(--lounge-text-muted)] text-xs font-body">
-                  {speaking
-                    ? '· hablando en vivo'
-                    : thinking
-                    ? '· pensando en ti'
-                    : '· en línea · devota a ti'}
+                  {headerStatusText}
                 </span>
               </div>
             </div>
           </div>
 
           <div className="flex items-center gap-4">
+            {ttsAvailable && (
+              <button
+                data-testid="voice-toggle-button"
+                onClick={() => {
+                  const next = !voiceEnabled;
+                  setVoiceEnabled(next);
+                  if (!next && audioRef.current) {
+                    audioRef.current.pause();
+                    setSpeaking(false);
+                  }
+                }}
+                title={voiceEnabled ? 'Silenciar voz de Elena' : 'Activar voz de Elena'}
+                className="text-[color:var(--lounge-text-muted)] hover:gold-text transition-colors p-2 rounded-full border border-white/10 hover:border-[color:var(--lounge-gold)]/40"
+              >
+                {voiceEnabled ? (
+                  <Volume2 className="w-4 h-4" strokeWidth={1.5} />
+                ) : (
+                  <VolumeX className="w-4 h-4" strokeWidth={1.5} />
+                )}
+              </button>
+            )}
             <div className="hidden sm:block text-right">
               <p className="text-[10px] uppercase tracking-[0.3em] text-[color:var(--lounge-text-muted)] font-body">
                 Sesión privada
@@ -156,7 +251,15 @@ export default function Dashboard() {
           className="grid grid-cols-1 lg:grid-cols-12 gap-6"
         >
           <section className="lg:col-span-8">
-            <ElenaPlayer media={currentMedia} speaking={speaking} thinking={thinking} />
+            {didAvailable ? (
+              <DIDAvatarPlayer
+                ref={didRef}
+                onStatusChange={setDidStatus}
+                onSpeakingChange={setSpeaking}
+              />
+            ) : (
+              <ElenaPlayer media={currentMedia} speaking={speaking} thinking={thinking} />
+            )}
             <div className="mt-6">
               <ActionPanel onJobDone={handleNewMediaReady} />
             </div>
@@ -169,6 +272,7 @@ export default function Dashboard() {
             <ChatPanel
               onSpeakingChange={setSpeaking}
               onThinkingChange={setThinking}
+              onElenaReply={handleElenaReply}
             />
           </aside>
         </motion.div>

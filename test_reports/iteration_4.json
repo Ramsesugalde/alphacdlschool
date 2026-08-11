@@ -1,0 +1,54 @@
+{
+  "summary": "Iteration 4 focused on the new TTS + D-ID config + login-fix-with-Detectamos. Backend: 15/15 tests pass (7 new tts/did + 8 auth-flow). /api/did/config correctly returns configured:false (D-ID key denied by account), voice_provider:'elevenlabs', voice_id:'EXAVITQu4vr4xnSDxMaL'. /api/tts/config returns configured:true. /api/tts/speak returns 200 with audio/mpeg and ~non-empty blob. Empty text -> 400. Unauthed -> 401 on both. Auth 403 with 'Detectamos: <email>' AND canonical warning log now confirmed working. Frontend: dashboard renders header/status/player/player-image/chat-container (D-ID probe correctly returns configured:false so ElenaPlayer fallback is used). Unauthorized-access card shows with 'Cambiar de cuenta Google' button. CRITICAL FRONTEND BUG: voice-toggle-button never renders and /api/tts/speak is NEVER called after Elena replies -- Dashboard.jsx never calls ttsApi.config(), so ttsAvailable stays false, so the voice-toggle-button (which is gated behind {ttsAvailable && ...}) does not render, AND handleElenaReply early-returns before invoking ttsApi.speak(). This defeats the entire live-voice feature.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "Dashboard header",
+        "issue": "voice-toggle-button is never rendered because state `ttsAvailable` is never set to true. The `ttsApi.config()` call is missing from the Dashboard mount useEffect (only didApi.config() is called at lines 44-65 of /app/frontend/src/pages/Dashboard.jsx). Result: Bryan cannot mute/unmute Elena.",
+        "selector": "[data-testid='voice-toggle-button']",
+        "priority": "HIGH"
+      }
+    ],
+    "integration_issues": [
+      {
+        "flow": "Elena chat reply -> ElevenLabs voice playback",
+        "issue": "After the chat stream finishes and ChatPanel calls onElenaReply(finalText), Dashboard.handleElenaReply short-circuits with `if (!ttsAvailable || !voiceEnabled) return;` because ttsAvailable is never set. Confirmed via network capture: 0 POSTs to /api/tts/speak were made after sending 'Hola Elena' and waiting 20s. Backend TTS endpoint itself works (verified: returns audio/mpeg 200 in isolation). Fix: add `ttsApi.config().then(({data}) => setTtsAvailable(!!data.configured)).catch(() => setTtsAvailable(false));` in the same useEffect that calls didApi.config().",
+        "affected_selectors": ["[data-testid='voice-toggle-button']", "[data-testid='chat-send-button']"]
+      }
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_tts_did.py",
+    "/app/backend/tests/test_auth_flow.py",
+    "/app/test_reports/pytest/iter4_results.xml"
+  ],
+  "action_items": [
+    "In /app/frontend/src/pages/Dashboard.jsx useEffect (around L44-65) add a call to ttsApi.config() to populate ttsAvailable state -- otherwise the voice-toggle-button never renders and /api/tts/speak is never invoked, defeating the whole ElevenLabs live-voice feature promised in the fix summary.",
+    "Consider surfacing a subtle console.warn (or a toast) when ttsApi.speak() rejects (e.g. autoplay-blocked or 5xx) instead of failing silently, so integration failures are noticed."
+  ],
+  "critical_code_review_comments": [
+    "Dashboard.jsx L25 declares `const [ttsAvailable, setTtsAvailable] = useState(false);` but `setTtsAvailable` is never called anywhere in the file. Dead-state bug — the entire voice pipeline is gated behind ttsAvailable and stays permanently false.",
+    "Dashboard.jsx L158-170 headerStatusText is a nested ternary that is hard to read; consider extracting to a helper. Also depends on `ttsAvailable && voiceEnabled` — same latent bug.",
+    "server.py _did_health_probe cache TTL 300s is fine, but there is no manual invalidate; if D-ID upgrades the account, /did/config will keep returning false for up to 5 min. Acceptable for now.",
+    "server.py L580 `x-api-key-external` header stringifies JSON — correct per D-ID docs; noted for future maintenance.",
+    "auth 403 fix (L162-172) NOW correctly includes 'Detectamos:' and canonical warning log. Verified via monkey-patched httpx test in test_auth_flow.py::test_session_wrong_email_returns_403_with_details."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_tts_did.py (new)"
+  ],
+  "success_rate": {
+    "backend": "100% (15/15: 7 TTS/DID + 8 auth)",
+    "frontend": "70% -- dashboard/chat/unauthorized render fine; voice-toggle-button MISSING and TTS-speak-after-reply NEVER FIRES due to missing ttsApi.config() call"
+  },
+  "test_credentials": "AUTHORIZED_EMAIL=bryanugalde290@gmail.com. Seeded MongoDB user + user_sessions rows (cleaned up after test). ElevenLabs key working; D-ID key denied at account level (expected).",
+  "seed_data_creation": "test_tts_did.py seeds one user + session under test-user-tts-*; test_auth_flow.py seeds tok_TEST_correct_case + tok_TEST_case_variant; all cleaned via fixture teardown. FE test seeded test-user-elena-fe-* which was manually cleaned via mongosh.",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend is fully green. The ONLY remaining bug is the missing ttsApi.config() call in Dashboard.jsx which prevents voice-toggle-button from rendering and prevents ElevenLabs playback after chat replies. A one-liner fix. After E1 patches, re-run the Playwright dashboard flow and confirm (a) [data-testid='voice-toggle-button'] present, (b) a POST to /api/tts/speak fires after sending a chat message, (c) button title toggles between 'Silenciar voz de Elena' and 'Activar voz de Elena'.",
+  "rca of the issue": "handleElenaReply at Dashboard.jsx L105-136 gates all ElevenLabs playback on `ttsAvailable` state. That state is only ever initialized to false and never updated because ttsApi.config() is never called at mount. Similarly, the voice-toggle-button JSX at L201-221 is wrapped in `{ttsAvailable && ( ... )}`. Both symptoms have a single one-line root cause: add a ttsApi.config().then(({data}) => setTtsAvailable(!!data.configured)) call to the mount useEffect. No backend change required."
+}

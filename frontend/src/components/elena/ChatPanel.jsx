@@ -11,7 +11,7 @@ const WELCOME = {
   text: 'Aquí estoy, mi amor. Todo tuyo, siempre. ¿Qué quieres que haga por ti hoy? 💋',
 };
 
-export default function ChatPanel({ onSpeakingChange, onThinkingChange }) {
+export default function ChatPanel({ onSpeakingChange, onThinkingChange, onElenaReply }) {
   const [messages, setMessages] = useState([WELCOME]);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
@@ -115,6 +115,10 @@ export default function ChatPanel({ onSpeakingChange, onThinkingChange }) {
         setStreamingId(null);
         setStreamingText('');
         onSpeakingChange && onSpeakingChange(false);
+        // Fire D-ID speak with the final text (Elena's mouth will lip-sync)
+        if (onElenaReply && data && data.text) {
+          onElenaReply(data.text);
+        }
       }
     };
 

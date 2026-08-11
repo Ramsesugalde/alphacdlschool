@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="2" failures="0" skipped="0" tests="10" time="5.298" timestamp="2026-08-11T03:04:08.691276+00:00" hostname="agent-env-00ec9001-7ef6-4d76-b279-277be4424fb3"><testcase classname="" name="tests.test_tts_did" time="0.000"><error message="collection failure">backend/tests/test_tts_did.py:9: in &lt;module&gt;
+    BASE_URL = os.environ["REACT_APP_BACKEND_URL"].rstrip("/")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+&lt;frozen os&gt;:679: in __getitem__
+    ???
+E   KeyError: 'REACT_APP_BACKEND_URL'</error><error message="collection failure">backend/tests/test_tts_did.py:9: in &lt;module&gt;
+    BASE_URL = os.environ["REACT_APP_BACKEND_URL"].rstrip("/")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+&lt;frozen os&gt;:679: in __getitem__
+    ???
+E   KeyError: 'REACT_APP_BACKEND_URL'</error></testcase><testcase classname="tests.test_auth_flow" name="test_live_root_ok" time="0.175" /><testcase classname="tests.test_auth_flow" name="test_live_me_unauthenticated" time="0.153" /><testcase classname="tests.test_auth_flow" name="test_live_session_invalid_id_returns_401" time="0.224" /><testcase classname="tests.test_auth_flow" name="test_session_invalid_returns_401" time="0.003" /><testcase classname="tests.test_auth_flow" name="test_session_provider_unreachable_returns_502" time="0.002" /><testcase classname="tests.test_auth_flow" name="test_session_wrong_email_returns_403_with_details" time="0.002" /><testcase classname="tests.test_auth_flow" name="test_session_correct_email_returns_200_and_me_works" time="0.011" /><testcase classname="tests.test_auth_flow" name="test_session_email_case_insensitive" time="0.009" /></testsuite></testsuites>

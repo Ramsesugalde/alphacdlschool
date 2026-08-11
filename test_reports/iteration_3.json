@@ -1,0 +1,48 @@
+{
+  "summary": "Auth-flow-focused testing for Elena Private Lounge. Wrote /app/backend/tests/test_auth_flow.py (8 tests) mixing live public checks + ASGI-transport calls with a monkey-patched httpx.AsyncClient to simulate Emergent /session-data. 7/8 passed. Frontend Playwright covered all 4 requested flows and passed. IMPORTANT: The claimed backend fix to include 'Detectamos: <returned-email>' in the 403 detail (and to log a canonical 'UNAUTHORIZED login attempt. Google returned email=' warning) was NOT actually applied to /app/backend/server.py. The 403 body only says 'Acceso restringido. Este lounge privado es solo para Bryan.' and the warning log line still says 'Unauthorized login attempt from: <email>'. Case-insensitive email match, correct-email happy path (cookie + /auth/me), 401 on invalid session, and 502 on provider-unreachable all work as expected.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/auth/session (wrong-email branch)",
+        "issue": "403 detail does NOT contain 'Detectamos: <returned-email>'. server.py L156-159 hard-codes 'Acceso restringido. Este lounge privado es solo para Bryan.' — Bryan cannot see which Google account was returned. Also logger.warning says 'Unauthorized login attempt from: <email>' instead of the expected canonical 'UNAUTHORIZED login attempt. Google returned email=<email> expected=<AUTHORIZED_EMAIL>'. This is the exact fix E1 said was applied but isn't in the code.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_auth_flow.py",
+    "/app/test_reports/pytest/auth_flow_results.xml"
+  ],
+  "action_items": [
+    "In /app/backend/server.py create_session, when email != AUTHORIZED_EMAIL, change the HTTPException detail to include the received email, e.g.: detail=f\"Acceso restringido. Este lounge privado es solo para Bryan. Detectamos: {email}\"",
+    "In the same block, change logger.warning to: logger.warning(f\"UNAUTHORIZED login attempt. Google returned email={email} expected={AUTHORIZED_EMAIL}\")",
+    "Re-run pytest backend/tests/test_auth_flow.py::test_session_wrong_email_returns_403_with_details to confirm — the other 7 auth tests already pass."
+  ],
+  "critical_code_review_comments": [
+    "server.py L156-159: 403 detail is a static string; missing 'Detectamos: <email>' that E1 claimed to add. Please implement the actual fix — the frontend AuthCallback already surfaces whatever detail the backend returns.",
+    "server.py L155: warning log missing the canonical marker string the review request expects.",
+    "server.py L165: on wrong email, upsert path is skipped correctly (raises before insert) — good. But the earlier existing block only updates name/picture; if AUTHORIZED_EMAIL user already exists we still create a NEW session_token every call — fine, just noting session_token accumulation over time. Consider TTL cleanup.",
+    "server.py L193-201: cookie has samesite='none' + secure=True which is correct for cross-site preview URL; verified /api/auth/me works with cookie in the correct-email test.",
+    "server.py L109/L162 use motor's find_one — good; ObjectId excluded via {'_id':0} projection everywhere. No serialization bug found.",
+    "server.py chat/media routes were not re-tested this iteration per E1 instruction; iteration_2 covered them."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_auth_flow.py"
+  ],
+  "success_rate": {
+    "backend": "87.5% (7/8 auth tests; the 1 failure is the missing 'Detectamos:' detail + missing canonical warning log — a real code gap, not a test bug)",
+    "frontend": "100% (4/4 auth flows verified: login button navigates to emergent OAuth with encoded /dashboard redirect; /dashboard#session_id=fake shows auth-unauthorized-message card containing 'Acceso Restringido'; URL fragment stripped after failed exchange; 'Cambiar de cuenta Google' navigates to accounts.google.com/Logout; /dashboard without cookie redirects to /login)"
+  },
+  "test_credentials": "AUTHORIZED_EMAIL=bryanugalde290@gmail.com (from /app/backend/.env). No live OAuth exercised; Emergent /session-data mocked via monkeypatch on server.httpx.AsyncClient in an ASGI transport TestClient.",
+  "seed_data_creation": "test_session_correct_email_returns_200_and_me_works creates a user (email=bryanugalde290@gmail.com) + session_token 'tok_TEST_correct_case' and cleans up the session at teardown; the user row is left (matches iteration_2 pattern). test_session_email_case_insensitive similarly creates+cleans 'tok_TEST_case_variant'.",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "The auth flow is functionally correct for happy path + case-insensitive email + invalid id + provider-unreachable. The ONLY remaining gap is that the wrong-email 403 body and warning log must be updated to include 'Detectamos: <email>' and 'UNAUTHORIZED login attempt. Google returned email=<email> expected=<AUTHORIZED_EMAIL>' respectively. Re-run only test_session_wrong_email_returns_403_with_details after E1 patches server.py. Frontend is fully wired — no re-test needed there unless AuthCallback UI copy changes.",
+  "rca of the issue": "Original user report ('cannot enter the lounge' via Entrar al Lounge) is NOT reproducible from the code alone — button correctly redirects to https://auth.emergentagent.com/?redirect=<encoded /dashboard>. When Emergent returns the correct email (bryanugalde290@gmail.com), backend issues a session_token cookie and /auth/me works. The most likely cause of Bryan's real-world failure is that Google returned a different account than expected (personal vs. corporate/alias) and the current 403 body — 'Acceso restringido. Este lounge privado es solo para Bryan.' — does NOT tell him which account was actually detected. Mitigation (already promised by E1 but NOT applied): append 'Detectamos: <email>' to the 403 detail so Bryan sees the exact account and can use 'Cambiar de cuenta Google'. That single string change closes the loop."
+}

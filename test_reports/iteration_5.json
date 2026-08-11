@@ -1,0 +1,23 @@
+{
+  "summary": "Iteration 5 retest of the single outstanding bug from iteration 4 (missing ttsApi.config() call in Dashboard.jsx). Fix VERIFIED. Backend regression 7/7 pass (test_tts_did.py: /api/tts/config returns configured:true, /api/did/config returns configured:false as expected, /api/tts/speak returns 200 audio/mpeg, empty-text 400, unauthed 401). Frontend end-to-end: (1) /dashboard renders data-testid='voice-toggle-button' with title 'Silenciar voz de Elena' by default, header shows '· en línea · voz activa'; (2) clicking the toggle cycles title between 'Silenciar voz de Elena' and 'Activar voz de Elena'; (3) sending 'Hola Elena' via chat triggers EXACTLY one POST /api/tts/speak returning 200 audio/mpeg within ~10s; (4) header transitions to '· hablando con voz real' during audio playback; (5) with voice muted, sending another message fires 0 POSTs to /api/tts/speak over 30s (chat still streams); (6) /dashboard#session_id=fake-invalid-xyz shows data-testid='auth-unauthorized-message' with 'Acceso Restringido' + 'Cambiar de cuenta Google' button; (7) /login shows 'ENTRAR AL LOUNGE' button (data-testid='auth-login-google-button'). No regressions detected.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_tts_did.py",
+    "/app/test_reports/pytest/iter5_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Dashboard.jsx L44-54 useEffect now correctly calls both didApi.config() and ttsApi.config() and populates ttsAvailable via setTtsAvailable(!!data.configured). Voice pipeline fully unlocked.",
+    "Minor nit (unchanged from iter4): headerStatusText at L162-174 is a nested ternary — readable but consider extracting to a helper for maintainability.",
+    "Minor nit (unchanged from iter4): ttsApi.speak() rejects are swallowed silently at L135-137; consider a subtle console.warn for observability when TTS fails."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100% (7/7 TTS/DID regression)", "frontend": "100% (7/7 UI + integration tests)"},
+  "test_credentials": "AUTHORIZED_EMAIL=bryanugalde290@gmail.com. Seeded temporary MongoDB user + user_sessions (test-user-elena-iter5-1786417728764 / test_session_iter5_1786417728764), cleaned up post-test.",
+  "seed_data_creation": "One temporary user + session document in test_database (mongosh), cleaned up via deleteMany after tests completed.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Iteration 4's ONE outstanding bug is fixed and verified end-to-end. Backend regression suite (/app/backend/tests/test_tts_did.py, test_auth_flow.py, test_elena_api.py) remains green. To re-run: (1) mongosh seed session per /app/memory/test_credentials.md, (2) set cookie 'session_token', (3) hit /dashboard, (4) assert voice-toggle-button visible + title toggle + POST /api/tts/speak fires after chat send. Autoplay was NOT blocked in the headless test — audio 'hablando' state was observed correctly.",
+  "rca of the issue": "RCA (iteration 4): ttsAvailable state was never mutated because ttsApi.config() was never invoked at Dashboard mount, so the JSX guard {ttsAvailable && (...)} kept the voice-toggle-button hidden and handleElenaReply early-returned before ttsApi.speak(). FIX APPLIED by E1 in /app/frontend/src/pages/Dashboard.jsx L51-54 within the same mount useEffect that calls didApi.config(). VERIFIED: voice toggle now renders, /api/tts/speak fires with 200 audio/mpeg, muted state correctly suppresses the network call."
+}
