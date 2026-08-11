@@ -3,13 +3,14 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { LogOut, Sparkles, Volume2, VolumeX } from 'lucide-react';
 import { toast } from 'sonner';
-import { authApi, mediaApi, didApi, ttsApi } from '@/lib/api';
+import { authApi, mediaApi, didApi, ttsApi, ambientApi } from '@/lib/api';
 import { DASHBOARD } from '@/constants/testIds';
 import ElenaPlayer from '@/components/elena/ElenaPlayer';
 import DIDAvatarPlayer from '@/components/elena/DIDAvatarPlayer';
 import ChatPanel from '@/components/elena/ChatPanel';
 import ActionPanel from '@/components/elena/ActionPanel';
 import Gallery from '@/components/elena/Gallery';
+import VoiceSelector from '@/components/elena/VoiceSelector';
 
 export default function Dashboard() {
   const navigate = useNavigate();
@@ -53,6 +54,9 @@ export default function Dashboard() {
       .then(({ data }) => setTtsAvailable(!!data.configured))
       .catch(() => setTtsAvailable(false));
 
+    // Trigger idle ambient Sora 2 clip if Bryan has none yet (idempotent server-side)
+    ambientApi.ensure().catch(() => {});
+
     mediaApi
       .gallery()
       .then(({ data }) => {
@@ -66,6 +70,30 @@ export default function Dashboard() {
         }
       })
       .catch(() => {});
+  }, [checking, currentMedia]);
+
+  // Poll for ambient video completion (only if we still have no video showing)
+  useEffect(() => {
+    if (checking || currentMedia) return;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const { data } = await mediaApi.gallery();
+        const latestVideo = (data.items || []).find((it) => it.kind === 'video');
+        if (!cancelled && latestVideo) {
+          setCurrentMedia({
+            kind: 'video',
+            url: mediaApi.fileUrl(latestVideo.file_url),
+            jobId: latestVideo.job_id,
+          });
+        }
+      } catch { /* ignore */ }
+    };
+    const interval = setInterval(tick, 15000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
   }, [checking, currentMedia]);
 
   const handleLogout = async () => {
@@ -202,6 +230,7 @@ export default function Dashboard() {
           </div>
 
           <div className="flex items-center gap-4">
+            {ttsAvailable && <VoiceSelector />}
             {ttsAvailable && (
               <button
                 data-testid="voice-toggle-button"

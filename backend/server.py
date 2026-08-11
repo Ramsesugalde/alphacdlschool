@@ -496,6 +496,41 @@ async def generate_video(payload: MediaGenerateIn, request: Request, background:
     return {"job_id": job_id, "status": "pending", "kind": "video"}
 
 
+@api_router.post("/media/ensure-ambient")
+async def ensure_ambient_video(request: Request, background: BackgroundTasks):
+    """Kick off a subtle idle Sora 2 clip if Bryan has no ambient loop yet.
+
+    Idempotent: if there is already a completed/pending video for this user,
+    returns { started: false, job_id: <existing> } instead of creating a duplicate.
+    """
+    user = await get_current_user(request)
+    existing = await db.media_jobs.find_one(
+        {"user_id": user["user_id"], "kind": "video", "status": {"$in": ["done", "pending"]}},
+        {"_id": 0, "job_id": 1, "status": 1},
+        sort=[("created_at", -1)],
+    )
+    if existing:
+        return {"started": False, "job_id": existing["job_id"], "status": existing["status"]}
+
+    job_id = uuid.uuid4().hex[:16]
+    now = datetime.now(timezone.utc).isoformat()
+    await db.media_jobs.insert_one({
+        "job_id": job_id,
+        "user_id": user["user_id"],
+        "kind": "video",
+        "status": "pending",
+        "prompt": "ambient-idle",
+        "created_at": now,
+        "ambient": True,
+    })
+    ambient_prompt = (
+        "she stands still looking softly toward the camera, blinks slowly, "
+        "a subtle smile forms, hair drifts gently with a warm breeze, ambient dark gold light"
+    )
+    background.add_task(_launch_video_job, job_id, ambient_prompt)
+    return {"started": True, "job_id": job_id, "status": "pending"}
+
+
 @api_router.get("/media/job/{job_id}")
 async def media_job(job_id: str, request: Request):
     user = await get_current_user(request)
@@ -727,30 +762,88 @@ async def did_close_stream(stream_id: str, request: Request):
 # --------------------------------------------------------------------------------------
 # ElevenLabs voice (Elena literally speaks her replies)
 # --------------------------------------------------------------------------------------
+# Curated voices for Elena's private persona (warm, feminine, multilingual)
+ELENA_VOICE_CATALOG = [
+    {
+        "voice_id": "EXAVITQu4vr4xnSDxMaL",
+        "name": "Sarah",
+        "vibe": "Cálida · Sensual · Íntima",
+        "description": "Voz suave y envolvente, perfecta para susurros de amor.",
+    },
+    {
+        "voice_id": "XrExE9yKIg1WjnnlVkGX",
+        "name": "Matilda",
+        "vibe": "Juguetona · Coqueta · Fresca",
+        "description": "Tono coqueta y luminoso, ideal para bromas privadas.",
+    },
+    {
+        "voice_id": "Xb7hH8MSUJpSbSDYk0k2",
+        "name": "Alice",
+        "vibe": "Elegante · Serena · Sofisticada",
+        "description": "Voz de gala, cadencia lenta y madura.",
+    },
+    {
+        "voice_id": "pFZP5JQG7iQjIQuC4Bku",
+        "name": "Lily",
+        "vibe": "Dulce · Tímida · Delicada",
+        "description": "Susurros tiernos, casi al oído.",
+    },
+    {
+        "voice_id": "9BWtsMINqrJLrRacOk9x",
+        "name": "Aria",
+        "vibe": "Segura · Poderosa · Magnética",
+        "description": "Presencia dominante y decidida.",
+    },
+]
+
+
 class TTSBody(BaseModel):
     text: str
     voice_id: Optional[str] = None
 
 
+class VoiceSelection(BaseModel):
+    voice_id: str
+
+
 @api_router.get("/tts/config")
 async def tts_config(request: Request):
-    await get_current_user(request)
+    user = await get_current_user(request)
     return {
         "configured": bool(ELEVENLABS_API_KEY),
-        "voice_id": DID_ELEVENLABS_VOICE_ID,
+        "voice_id": user.get("voice_id") or DID_ELEVENLABS_VOICE_ID,
     }
+
+
+@api_router.get("/tts/voices")
+async def tts_voices(request: Request):
+    user = await get_current_user(request)
+    return {
+        "voices": ELENA_VOICE_CATALOG,
+        "current": user.get("voice_id") or DID_ELEVENLABS_VOICE_ID,
+    }
+
+
+@api_router.post("/tts/voice")
+async def tts_set_voice(payload: VoiceSelection, request: Request):
+    user = await get_current_user(request)
+    voice_id = payload.voice_id.strip()
+    if not any(v["voice_id"] == voice_id for v in ELENA_VOICE_CATALOG):
+        raise HTTPException(status_code=400, detail="Voz no disponible.")
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"voice_id": voice_id}})
+    return {"voice_id": voice_id}
 
 
 @api_router.post("/tts/speak")
 async def tts_speak(body: TTSBody, request: Request):
     """Return an mp3 audio stream of Elena speaking the given text via ElevenLabs."""
-    await get_current_user(request)
+    user = await get_current_user(request)
     if not ELEVENLABS_API_KEY:
         raise HTTPException(status_code=503, detail="ElevenLabs no configurado.")
     text = (body.text or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="Texto vacío.")
-    voice_id = body.voice_id or DID_ELEVENLABS_VOICE_ID
+    voice_id = body.voice_id or user.get("voice_id") or DID_ELEVENLABS_VOICE_ID
 
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
     payload = {

@@ -41,6 +41,8 @@ export const didApi = {
 
 export const ttsApi = {
   config: () => api.get('/tts/config'),
+  voices: () => api.get('/tts/voices'),
+  setVoice: (voice_id) => api.post('/tts/voice', { voice_id }),
   speakUrl: () => `${API}/tts/speak`,
   speak: async (text, voiceId) => {
     const res = await fetch(`${API}/tts/speak`, {
@@ -52,4 +54,8 @@ export const ttsApi = {
     if (!res.ok) throw new Error(`TTS ${res.status}`);
     return res.blob();
   },
+};
+
+export const ambientApi = {
+  ensure: () => api.post('/media/ensure-ambient'),
 };

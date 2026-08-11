@@ -1,0 +1,26 @@
+{
+  "summary": "Iteration 6 tests two new features: Voice Personality (5-voice ElevenLabs catalog with per-user persistence) + Ambient Loop (idempotent Sora 2 ensure-ambient). Backend: 9/9 pytest passed (test_voice_ambient.py) — GET /api/tts/voices returns 5 voices + current, POST /api/tts/voice persists selection (verified via subsequent GET), unknown voice_id -> 400 'Voz no disponible.', unauth -> 401. POST /api/tts/speak with no body.voice_id correctly falls back to user.voice_id (Matilda) and returns 200 audio/mpeg. POST /api/media/ensure-ambient first call returns {started:true, status:'pending'} and creates media_jobs doc with kind='video', prompt='ambient-idle', ambient=true; second call idempotent (started:false, same job_id); pre-seeded 'done' doc also returns started:false; unauth -> 401. Frontend: /dashboard with seeded session cookie shows voice-selector-trigger (label starts as 'Sarah'), clicking opens voice-selector-menu with exactly 5 option buttons; clicking Matilda closes menu, fires POST /api/tts/voice, shows sonner toast 'Elena adopta la voz \"Matilda\" 💋', and updates trigger label to 'Matilda'. Ambient endpoint fires exactly 1 POST on mount (verified with 2 consecutive full page reloads — server-side idempotency confirmed). voice-toggle-button still renders next to VoiceSelector. Chat streaming regression: sending 'Hola Elena, prueba' -> 1 POST /api/chat/stream, Elena reply rendered, 1 POST /api/tts/speak (200 audio/mpeg) fires with Matilda voice. Dropdown z-[80] + rgba(8,8,10,0.98) renders cleanly above chat panel (screenshot shows toast + trigger label update — no overlap issue).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_voice_ambient.py",
+    "/app/test_reports/pytest/iter6_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py L499-531 /api/media/ensure-ambient correctly guards on {status: {$in:['done','pending']}} and sorts by created_at desc — idempotency is solid. If a prior job fails, a new one will kick off (good).",
+    "server.py L818-834 /api/tts/voices validates voice_id against ELENA_VOICE_CATALOG membership before persisting — safe.",
+    "server.py L846 falls back to user.voice_id then DID_ELEVENLABS_VOICE_ID (Sarah) if user has never picked — clean.",
+    "VoiceSelector.jsx L37-54 correctly early-returns when clicking already-selected voice, and closes menu whether success or failure.",
+    "Dashboard.jsx L58 ambientApi.ensure() is fire-and-forget (.catch(()=>{})) — appropriate since backend enforces idempotency.",
+    "Minor nit: VoiceSelector.jsx L58 hides component entirely if voices.length===0, which is fine, but consider a skeleton if /api/tts/voices ever fails silently — currently the whole selector disappears without any feedback.",
+    "Minor nit: no e2e verification that the actual audio sample audibly uses Matilda vs Sarah (headless), but backend confirms voice_id is passed to ElevenLabs URL — logical correctness is assured."
+  ],
+  "updated_files": ["/app/backend/tests/test_voice_ambient.py"],
+  "success_rate": {"backend": "100% (9/9)", "frontend": "100% (all 11 UI + integration assertions from spec)"},
+  "test_credentials": "AUTHORIZED_EMAIL=bryanugalde290@gmail.com. Seeded temp mongo user + session via mongosh; cleaned up post-run.",
+  "seed_data_creation": "Temp user (test-user-voice-*) + session for backend pytest; separate temp user (test-user-fe-*) for frontend playwright. Both cleaned via deleteMany after tests.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "New backend regression file at /app/backend/tests/test_voice_ambient.py covers voices catalog, voice persistence, ensure-ambient idempotency. To run all backend regression: pytest /app/backend/tests -v. Frontend flow: seed mongosh session (see /app/memory/test_credentials.md), set cookie session_token, navigate /dashboard, wait for voice-selector-trigger. Do NOT wait for actual Sora 2 completion (2-8 min); only check the ensure-ambient endpoint response shape."
+}
