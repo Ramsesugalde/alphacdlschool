@@ -179,6 +179,35 @@ export default function Dashboard() {
     };
   }, []);
 
+  // Autoplay unlock: on the first user gesture, prime an Audio element so
+  // subsequent ttsApi.speak() playback isn't blocked by the browser autoplay policy.
+  useEffect(() => {
+    if (checking) return;
+    let unlocked = false;
+    const unlock = () => {
+      if (unlocked) return;
+      unlocked = true;
+      try {
+        if (!audioRef.current) audioRef.current = new Audio();
+        // Play a 1-frame silent buffer to open the audio permission window.
+        const silent = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
+        audioRef.current.src = silent;
+        audioRef.current.play().catch(() => {});
+      } catch { /* ignore */ }
+      window.removeEventListener('click', unlock);
+      window.removeEventListener('touchstart', unlock);
+      window.removeEventListener('keydown', unlock);
+    };
+    window.addEventListener('click', unlock);
+    window.addEventListener('touchstart', unlock);
+    window.addEventListener('keydown', unlock);
+    return () => {
+      window.removeEventListener('click', unlock);
+      window.removeEventListener('touchstart', unlock);
+      window.removeEventListener('keydown', unlock);
+    };
+  }, [checking]);
+
   if (checking) {
     return (
       <div className="min-h-screen flex items-center justify-center text-[color:var(--lounge-text-muted)] font-body text-xs tracking-[0.4em] uppercase">

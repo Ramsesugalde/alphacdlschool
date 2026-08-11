@@ -56,7 +56,7 @@ export default function ElenaPlayer({ media, speaking = false, thinking = false 
       data-testid={DASHBOARD.playerContainer}
       className="glass rounded-3xl overflow-hidden relative gold-glow"
     >
-      <div className="relative aspect-[16/10] w-full bg-black overflow-hidden">
+      <div className="relative aspect-[3/4] sm:aspect-[16/12] w-full bg-black overflow-hidden">
         {/* Persistent motion container: breathing + parallax + speaking sway */}
         <motion.div
           className="absolute inset-0"
@@ -71,6 +71,7 @@ export default function ElenaPlayer({ media, speaking = false, thinking = false 
               ? { rotate: { repeat: Infinity, duration: 1.4, ease: 'easeInOut' }, scale: { repeat: Infinity, duration: 1.4, ease: 'easeInOut' }, x: { duration: 0.4 }, y: { duration: 0.4 } }
               : { duration: 0.4, ease: 'easeOut' }
           }
+          style={{ objectPosition: 'center top' }}
         >
           <AnimatePresence mode="wait">
             {isVideo && (
@@ -88,6 +89,7 @@ export default function ElenaPlayer({ media, speaking = false, thinking = false 
                 exit={{ opacity: 0 }}
                 transition={{ duration: 0.8 }}
                 className="w-full h-full object-cover"
+                style={{ objectPosition: 'center top' }}
               />
             )}
             {!isVideo && hasMedia && media.kind === 'photo' && (
@@ -101,6 +103,7 @@ export default function ElenaPlayer({ media, speaking = false, thinking = false 
                 exit={{ opacity: 0 }}
                 transition={{ duration: 1.0 }}
                 className="w-full h-full object-cover elena-breath"
+                style={{ objectPosition: 'center top' }}
                 draggable={false}
               />
             )}
@@ -115,6 +118,7 @@ export default function ElenaPlayer({ media, speaking = false, thinking = false 
                 exit={{ opacity: 0 }}
                 transition={{ duration: 1.2, ease: [0.16, 1, 0.3, 1] }}
                 className="w-full h-full object-cover elena-breath"
+                style={{ objectPosition: 'center top' }}
                 draggable={false}
               />
             )}

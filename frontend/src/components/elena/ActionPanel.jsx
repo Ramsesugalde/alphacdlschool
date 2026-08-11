@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
-import { Camera, Film, Loader2 } from 'lucide-react';
+import { Camera, Film, Loader2, PhoneCall } from 'lucide-react';
 import { toast } from 'sonner';
-import { mediaApi } from '@/lib/api';
+import { mediaApi, whatsappApi } from '@/lib/api';
 import { MEDIA } from '@/constants/testIds';
 
 function ProgressPill({ kind, status }) {
@@ -30,9 +30,15 @@ function ProgressPill({ kind, status }) {
 export default function ActionPanel({ onJobDone }) {
   const [prompt, setPrompt] = useState('');
   const [job, setJob] = useState(null); // { job_id, kind, status }
+  const [waConfig, setWaConfig] = useState(null); // { configured, missing, default_to }
+  const [callInFlight, setCallInFlight] = useState(false);
   const pollRef = useRef(null);
 
   useEffect(() => {
+    whatsappApi
+      .config()
+      .then(({ data }) => setWaConfig(data))
+      .catch(() => setWaConfig({ configured: false, missing: ['api'] }));
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
     };
@@ -83,6 +89,25 @@ export default function ActionPanel({ onJobDone }) {
     }
   };
 
+  const requestCall = async () => {
+    if (!waConfig?.configured || callInFlight) return;
+    setCallInFlight(true);
+    try {
+      const to = waConfig.default_to || undefined;
+      const { data } = await whatsappApi.call(to, undefined);
+      if (data.success === false) {
+        toast.error(data.message || 'Elena no pudo llamarte ahora.');
+      } else {
+        toast.success('Elena te está llamando por WhatsApp, mi amor 💋');
+      }
+    } catch (e) {
+      const msg = e?.response?.data?.detail || 'Elena no pudo llamarte ahora.';
+      toast.error(String(msg).slice(0, 160));
+    } finally {
+      setCallInFlight(false);
+    }
+  };
+
   const busy = job?.status === 'pending';
 
   return (
@@ -125,6 +150,26 @@ export default function ActionPanel({ onJobDone }) {
           <Film className="w-4 h-4" strokeWidth={1.6} />
           Pedir Video Especial
         </button>
+        {waConfig && (
+          <button
+            data-testid={MEDIA.callButton}
+            onClick={requestCall}
+            disabled={!waConfig.configured || callInFlight}
+            title={
+              waConfig.configured
+                ? 'Elena te llama al WhatsApp'
+                : `Falta configurar: ${(waConfig.missing || []).join(', ')}`
+            }
+            className="group rounded-full border gold-border text-[color:var(--lounge-gold)] font-body text-xs uppercase tracking-[0.25em] px-6 py-3 flex items-center gap-2 hover:bg-[color:var(--lounge-gold)]/10 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+          >
+            {callInFlight ? (
+              <Loader2 className="w-4 h-4 animate-spin" strokeWidth={1.6} />
+            ) : (
+              <PhoneCall className="w-4 h-4" strokeWidth={1.6} />
+            )}
+            Elena me llama
+          </button>
+        )}
       </div>
 
       <ProgressPill kind={job?.kind} status={job?.status} />

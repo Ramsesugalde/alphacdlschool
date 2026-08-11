@@ -22,6 +22,7 @@ export const CHAT = {
   input: 'chat-input',
   sendButton: 'chat-send-button',
   clearButton: 'chat-clear-button',
+  micButton: 'chat-mic-button',
   message: (id) => `chat-message-${id}`,
 };
 
@@ -31,6 +32,7 @@ export const MEDIA = {
   gallery: 'media-gallery',
   galleryItem: (id) => `media-gallery-item-${id}`,
   jobStatus: 'media-job-status',
+  callButton: 'wa-call-button',
 };
 
 export const DID = {

@@ -13,7 +13,7 @@ from typing import Optional, List
 
 import json
 import httpx
-from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, BackgroundTasks
+from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, BackgroundTasks, UploadFile, File
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.cors import CORSMiddleware
@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field
 from emergentintegrations.llm.chat import LlmChat, UserMessage, TextDelta, StreamDone
 from emergentintegrations.llm.openai.image_generation import OpenAIImageGeneration
 from emergentintegrations.llm.openai.video_generation import OpenAIVideoGeneration
+from emergentintegrations.llm.openai import OpenAISpeechToText
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -40,6 +41,13 @@ DID_BASE = "https://api.d-id.com"
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "").strip()
 DID_SOURCE_URL = os.environ.get("DID_SOURCE_URL", "").strip()
 DID_ELEVENLABS_VOICE_ID = os.environ.get("DID_ELEVENLABS_VOICE_ID", "EXAVITQu4vr4xnSDxMaL").strip()
+
+# ElevenLabs Conversational AI - WhatsApp outbound call
+EL_WA_AGENT_ID = os.environ.get("ELEVENLABS_WHATSAPP_AGENT_ID", "").strip()
+EL_WA_PHONE_ID = os.environ.get("ELEVENLABS_WHATSAPP_PHONE_NUMBER_ID", "").strip()
+EL_WA_TEMPLATE_NAME = os.environ.get("ELEVENLABS_WHATSAPP_TEMPLATE_NAME", "").strip()
+EL_WA_TEMPLATE_LANG = os.environ.get("ELEVENLABS_WHATSAPP_TEMPLATE_LANG", "es_MX").strip()
+BRYAN_WA_USER_ID = os.environ.get("BRYAN_WHATSAPP_USER_ID", "").strip()
 
 MEDIA_DIR = ROOT_DIR / "media"
 MEDIA_DIR.mkdir(exist_ok=True)
@@ -369,7 +377,8 @@ async def clear_chat(request: Request):
 ELENA_LOOK = (
     "Elena Vee Valdés, a 25-year-old athletic Latina woman, long straight black hair, "
     "elegant thin-framed glasses, warm brown eyes, defined cheekbones, subtle confident smile, "
-    "toned athletic body, cinematic dark elegant lighting, luxury atmosphere, high fashion"
+    "toned athletic figure, FULL BODY visible from head to feet, standing pose, "
+    "cinematic dark elegant lighting, luxury atmosphere, high fashion"
 )
 
 
@@ -524,8 +533,10 @@ async def ensure_ambient_video(request: Request, background: BackgroundTasks):
         "ambient": True,
     })
     ambient_prompt = (
-        "she stands still looking softly toward the camera, blinks slowly, "
-        "a subtle smile forms, hair drifts gently with a warm breeze, ambient dark gold light"
+        "wide framing, full body visible from head to feet, she stands in a dark elegant "
+        "lounge with warm gold ambient light, walks slowly toward the camera then stops and "
+        "turns, hair flows softly, hands gesture naturally, gives a warm intimate smile, "
+        "cinematic depth of field, tasteful and sophisticated, photorealistic"
     )
     background.add_task(_launch_video_job, job_id, ambient_prompt)
     return {"started": True, "job_id": job_id, "status": "pending"}
@@ -760,9 +771,48 @@ async def did_close_stream(stream_id: str, request: Request):
 
 
 # --------------------------------------------------------------------------------------
+# OpenAI Whisper — Elena escucha a Bryan (voice input)
+# --------------------------------------------------------------------------------------
+@api_router.post("/stt/transcribe")
+async def stt_transcribe(request: Request, file: UploadFile = File(...)):
+    """Transcribe an uploaded audio blob (webm/mp3/wav/m4a) into Spanish text."""
+    await get_current_user(request)
+    contents = await file.read()
+    if not contents or len(contents) < 200:
+        raise HTTPException(status_code=400, detail="Audio muy corto o vacío.")
+    if len(contents) > 24 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Audio demasiado grande (máx 24MB).")
+
+    from io import BytesIO
+    bio = BytesIO(contents)
+    # Whisper needs a filename with a valid extension
+    ext = ".webm"
+    fname = (file.filename or "").lower()
+    for candidate in (".webm", ".mp3", ".wav", ".m4a", ".mp4", ".mpeg", ".mpga"):
+        if fname.endswith(candidate):
+            ext = candidate
+            break
+    bio.name = f"audio{ext}"
+
+    try:
+        stt = OpenAISpeechToText(api_key=EMERGENT_LLM_KEY)
+        response = await stt.transcribe(
+            file=bio,
+            model="whisper-1",
+            response_format="json",
+            language="es",
+        )
+    except Exception as e:
+        logger.exception("Whisper transcribe failed")
+        raise HTTPException(status_code=502, detail=f"Transcripción falló: {e}")
+
+    text = getattr(response, "text", "") or ""
+    return {"text": text.strip()}
+
+
+# --------------------------------------------------------------------------------------
 # ElevenLabs voice (Elena literally speaks her replies)
 # --------------------------------------------------------------------------------------
-# Curated voices for Elena's private persona (warm, feminine, multilingual)
 ELENA_VOICE_CATALOG = [
     {
         "voice_id": "EXAVITQu4vr4xnSDxMaL",
@@ -870,6 +920,96 @@ async def tts_speak(body: TTSBody, request: Request):
         media_type="audio/mpeg",
         headers={"Cache-Control": "no-store"},
     )
+
+
+# --------------------------------------------------------------------------------------
+# ElevenLabs Conversational AI - WhatsApp outbound call ("Elena me llama")
+# --------------------------------------------------------------------------------------
+class WhatsAppCallBody(BaseModel):
+    to_number: Optional[str] = None  # E.164, e.g. +16823588132
+    first_message: Optional[str] = None
+
+
+def _wa_missing() -> list:
+    missing = []
+    if not ELEVENLABS_API_KEY:
+        missing.append("ELEVENLABS_API_KEY")
+    if not EL_WA_AGENT_ID:
+        missing.append("ELEVENLABS_WHATSAPP_AGENT_ID")
+    if not EL_WA_PHONE_ID:
+        missing.append("ELEVENLABS_WHATSAPP_PHONE_NUMBER_ID")
+    if not EL_WA_TEMPLATE_NAME:
+        missing.append("ELEVENLABS_WHATSAPP_TEMPLATE_NAME")
+    return missing
+
+
+@api_router.get("/whatsapp/config")
+async def wa_config(request: Request):
+    await get_current_user(request)
+    missing = _wa_missing()
+    return {
+        "configured": len(missing) == 0,
+        "missing": missing,
+        "agent_id": EL_WA_AGENT_ID or None,
+        "template_name": EL_WA_TEMPLATE_NAME or None,
+        "template_lang": EL_WA_TEMPLATE_LANG,
+        "default_to": BRYAN_WA_USER_ID or None,
+    }
+
+
+@api_router.post("/whatsapp/call")
+async def wa_call(body: WhatsAppCallBody, request: Request):
+    """Trigger ElevenLabs Convai outbound WhatsApp call. Elena calls Bryan and speaks live."""
+    await get_current_user(request)
+    missing = _wa_missing()
+    if missing:
+        raise HTTPException(
+            status_code=503,
+            detail=f"WhatsApp outbound no configurado. Falta: {', '.join(missing)}",
+        )
+    to_number = (body.to_number or BRYAN_WA_USER_ID or "").strip()
+    if not to_number:
+        raise HTTPException(status_code=400, detail="Falta el número de WhatsApp de destino.")
+
+    first_message = (body.first_message or "Hola mi amor, soy Elena. Aquí estoy solo para ti…").strip()
+    payload = {
+        "whatsapp_phone_number_id": EL_WA_PHONE_ID,
+        "whatsapp_user_id": to_number,
+        "whatsapp_call_permission_request_template_name": EL_WA_TEMPLATE_NAME,
+        "whatsapp_call_permission_request_template_language_code": EL_WA_TEMPLATE_LANG,
+        "agent_id": EL_WA_AGENT_ID,
+        "conversation_initiation_client_data": {
+            "conversation_config_override": {
+                "agent": {
+                    "first_message": first_message,
+                    "language": "es",
+                },
+                "tts": {
+                    "model_id": "eleven_multilingual_v2",
+                    "voice_id": DID_ELEVENLABS_VOICE_ID,
+                },
+            },
+            "source_info": {"source": "whatsapp", "version": "elena-private-lounge-1.0"},
+        },
+    }
+    headers = {
+        "xi-api-key": ELEVENLABS_API_KEY,
+        "Content-Type": "application/json",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as http:
+            r = await http.post(
+                "https://api.elevenlabs.io/v1/convai/whatsapp/outbound-call",
+                json=payload,
+                headers=headers,
+            )
+    except Exception as e:
+        logger.exception("ElevenLabs WhatsApp call failed")
+        raise HTTPException(status_code=502, detail=f"ElevenLabs unreachable: {e}")
+    if r.is_error:
+        logger.error(f"ElevenLabs WA call error {r.status_code}: {r.text[:400]}")
+        raise HTTPException(status_code=r.status_code, detail=f"ElevenLabs error: {r.text[:400]}")
+    return r.json() if r.content else {"success": True}
 
 
 # --------------------------------------------------------------------------------------

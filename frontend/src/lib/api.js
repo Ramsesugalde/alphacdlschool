@@ -59,3 +59,29 @@ export const ttsApi = {
 export const ambientApi = {
   ensure: () => api.post('/media/ensure-ambient'),
 };
+
+export const whatsappApi = {
+  config: () => api.get('/whatsapp/config'),
+  call: (to_number, first_message) =>
+    api.post('/whatsapp/call', { to_number, first_message }),
+};
+
+export const sttApi = {
+  transcribe: async (blob, filename = 'audio.webm') => {
+    const form = new FormData();
+    form.append('file', blob, filename);
+    const res = await fetch(`${API}/stt/transcribe`, {
+      method: 'POST',
+      credentials: 'include',
+      body: form,
+    });
+    if (!res.ok) {
+      let detail = 'Transcripción falló';
+      try {
+        detail = (await res.json()).detail || detail;
+      } catch { /* ignore */ }
+      throw new Error(detail);
+    }
+    return (await res.json()).text;
+  },
+};

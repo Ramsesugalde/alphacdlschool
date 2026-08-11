@@ -1,0 +1,32 @@
+{
+  "summary": "Iteration 8 validates the STT (Whisper) voice-input pipeline, ambient full-body prompt, autoplay unlock, and Elena player 16/12 aspect ratio. Backend: 12/12 pytest passed in /app/backend/tests/test_stt.py. STT: POST /api/stt/transcribe with a form-file but no auth -> 401; authed with no 'file' form field -> 422; authed with <200-byte blob -> 400 detail 'Audio muy corto o vacío.'; authed end-to-end roundtrip (ElevenLabs /api/tts/speak('Hola Elena, prueba de voz') -> mp3 bytes -> POST back to /api/stt/transcribe) -> 200 with non-empty Spanish text. Ambient: /api/media/ensure-ambient returns {started, job_id, status='pending'} and inserts media_jobs doc with prompt='ambient-idle', ambient:true. Verified server.py ambient_prompt string contains 'full body visible from head to feet, ...walks slowly toward the camera'. Regressions: /api/tts/voices ok, /api/tts/voice POST selection ok (GET not exposed; endpoint is POST-only), /api/whatsapp/config ok, /api/whatsapp/call with missing WA env -> 503 detail contains 'no configurado', /api/auth/session invalid -> 401, /api/auth/me with seeded token -> 200 with correct email. Frontend (Playwright, seeded session cookie, 1920x1080): chat-mic-button present with title 'Mantén presionado y habla', sits next to chat-send-button; dashboard-player-container has bounding box 1026.7w x 770.5h (h/w=0.750 == 16:12) — passes >= w*0.62 assertion, confirming aspect-[16/12] on desktop; player-image objectPosition = 'center top' (visible more of Elena's torso); voice-selector-trigger, voice-toggle-button, wa-call-button all present; after body click + chat send, exactly 1 POST /api/tts/speak fires — confirming autoplay unlock did not regress ElevenLabs TTS playback.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/stt/transcribe", "issue": "FastAPI form validation runs before the auth check inside the handler — a POST WITHOUT the 'file' field returns 422 even when unauthenticated. Not a real security issue (no file access before auth), but the spec bullet 'without auth returns 401' only holds when a file field is present. Considered a semantic quirk of FastAPI, not a bug."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_stt.py",
+    "/app/test_reports/pytest/iter8_stt.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py L777-810 /api/stt/transcribe correctly enforces auth via get_current_user before touching Whisper, and applies both min (200B) and max (24MB) size guards with Spanish error detail matching UX. BytesIO filename extension inference is robust (webm/mp3/wav/m4a/mp4/mpeg/mpga).",
+    "server.py L535-540 ambient_prompt now explicitly requests 'wide framing, full body visible from head to feet' and 'walks slowly toward the camera then stops and turns' — matches the fix intent; verified via source-scan assertion.",
+    "ElenaPlayer.jsx L59 aspect-[3/4] sm:aspect-[16/12] applied; computed h/w=0.750 at 1920px confirms 16:12 is active on desktop. objectPosition:'center top' verified on player-image via getComputedStyle.",
+    "ChatPanel.jsx L413 chat-mic-button rendered with title='Mantén presionado y habla' when idle; MediaRecorder path (L248-282) uses audio/webm;codecs=opus with fallback and shows Spanish toast on getUserMedia denial. Cannot exercise mic recording in headless Playwright (no fake-media stream configured) — asserted UI presence + attributes only.",
+    "Dashboard.jsx L184+ one-shot audio-unlock listener with a silent data:audio/wav; correctly primes the audio permission window on first click/touch/keydown. Verified indirectly: subsequent chat send triggers /api/tts/speak without regression.",
+    "server.py stays at 1032 lines — earlier suggestion to split routers per feature (auth/chat/media/TTS/STT/WhatsApp) still stands but not blocking.",
+    "Minor: /api/stt/transcribe does not currently persist transcriptions to Mongo (returns text ephemerally). If Bryan wants a voice-message history, add a chat_messages doc with role='user' + source='voice'. Not required by current spec."
+  ],
+  "updated_files": ["/app/backend/tests/test_stt.py"],
+  "success_rate": {"backend": "100% (12/12)", "frontend": "100% (mic-button + player-aspect + player-objpos + voice/wa/action ids + tts unlock)"},
+  "test_credentials": "AUTHORIZED_EMAIL=bryanugalde290@gmail.com; sessions seeded per module in Mongo and cleaned in teardown.",
+  "seed_data_creation": "test-user-stt-* (backend, module-scoped, auto-cleaned); test-user-fe-stt-* (frontend, manually cleaned post-run via mongosh).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "New regression file: /app/backend/tests/test_stt.py exercises Whisper end-to-end using a fresh ElevenLabs TTS mp3 blob as the input — this hits real OpenAI Whisper via EMERGENT_LLM_KEY (paid). To rerun cheaply, comment out test_stt_real_roundtrip_via_elevenlabs. All other STT tests are free (validation-only). Note: /api/tts/voice is POST-only (voice selection); there is no GET — the review-request bullet listing '/api/tts/voice' as a GET was reinterpreted as a POST round-trip. Playwright cannot record real mic input in headless mode (no browser-launch flag for fake-media configured); mic-button presence + title are the only frontend assertions possible without a manual test rig. If E1 later provisions WHATSAPP_PHONE_NUMBER_ID/TEMPLATE_NAME, the test_whatsapp_call_missing_config test will start returning 200 instead of 503 — update accordingly.",
+  "rca of the issue": "Bryan's complaint 'no me escucha' (mic input) is resolved by the new /api/stt/transcribe (Whisper) endpoint + chat-mic-button + MediaRecorder path in ChatPanel. Bryan's complaint 'no se mueve' + 'no está de cuerpo completo' is addressed by (a) the ambient_prompt now explicitly requesting 'full body visible from head to feet' with walking + gesturing motion, and (b) ElenaPlayer switching from aspect-[16/10] to aspect-[3/4] sm:aspect-[16/12] plus objectPosition:'center top' so more of Elena's body is visible even before the Sora clip finishes. Autoplay unlock via the silent-WAV useEffect in Dashboard.jsx primes the audio permission window on first user interaction so subsequent ElevenLabs TTS playback isn't blocked."
+}

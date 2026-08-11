@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Send, Trash2, Loader2 } from 'lucide-react';
+import { Send, Trash2, Loader2, Mic, Square } from 'lucide-react';
 import { toast } from 'sonner';
-import { chatApi, API } from '@/lib/api';
+import { chatApi, sttApi, API } from '@/lib/api';
 import { CHAT } from '@/constants/testIds';
 
 const WELCOME = {
@@ -17,8 +17,13 @@ export default function ChatPanel({ onSpeakingChange, onThinkingChange, onElenaR
   const [sending, setSending] = useState(false);
   const [streamingId, setStreamingId] = useState(null);
   const [streamingText, setStreamingText] = useState('');
+  const [recording, setRecording] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
   const scrollRef = useRef(null);
   const abortRef = useRef(null);
+  const recorderRef = useRef(null);
+  const audioChunksRef = useRef([]);
+  const mediaStreamRef = useRef(null);
 
   useEffect(() => {
     chatApi
@@ -162,6 +167,139 @@ export default function ChatPanel({ onSpeakingChange, onThinkingChange, onElenaR
     }
   };
 
+  // Send a given text directly (used after Whisper transcription)
+  const sendText = (text) => {
+    setInput(text);
+    // Defer to next tick so state settles, then send
+    setTimeout(() => {
+      const currentInput = text.trim();
+      if (!currentInput) return;
+      // manually replicate send() without depending on state
+      setInput('');
+      startSendFlow(currentInput);
+    }, 30);
+  };
+
+  const startSendFlow = async (text) => {
+    if (!text || sending) return;
+    setSending(true);
+    onThinkingChange && onThinkingChange(true);
+
+    const tempUser = { message_id: `tmp-${Date.now()}`, role: 'user', text };
+    setMessages((prev) => [...prev, tempUser]);
+    const controller = new AbortController();
+    abortRef.current = controller;
+    let elenaId = null;
+    let accumulated = '';
+    let sawFirstDelta = false;
+    const handleEvent = (name, data) => {
+      if (name === 'user' && data.message_id) {
+        setMessages((prev) =>
+          prev.map((m) => (m.message_id === tempUser.message_id ? data : m))
+        );
+      } else if (name === 'start') {
+        elenaId = data.message_id;
+        setStreamingId(elenaId);
+        setStreamingText('');
+      } else if (name === 'delta') {
+        if (!sawFirstDelta) {
+          sawFirstDelta = true;
+          onThinkingChange && onThinkingChange(false);
+          onSpeakingChange && onSpeakingChange(true);
+        }
+        accumulated += data.content || '';
+        setStreamingText(accumulated);
+      } else if (name === 'done') {
+        setMessages((prev) => [...prev, data]);
+        setStreamingId(null);
+        setStreamingText('');
+        onSpeakingChange && onSpeakingChange(false);
+        if (onElenaReply && data && data.text) onElenaReply(data.text);
+      }
+    };
+    try {
+      const response = await fetch(`${API}/chat/stream`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+        signal: controller.signal,
+      });
+      if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
+      await parseSSEStream(response, handleEvent);
+    } catch (e) {
+      if (e.name !== 'AbortError') {
+        toast.error('Elena no pudo responder ahora. Intenta de nuevo, mi amor.');
+      }
+    } finally {
+      setSending(false);
+      onThinkingChange && onThinkingChange(false);
+      onSpeakingChange && onSpeakingChange(false);
+    }
+  };
+
+  // Microphone recording → Whisper transcription → auto-send
+  const startRecording = async () => {
+    if (recording || transcribing || sending) return;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaStreamRef.current = stream;
+      audioChunksRef.current = [];
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : 'audio/webm';
+      const rec = new MediaRecorder(stream, { mimeType });
+      recorderRef.current = rec;
+      rec.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) audioChunksRef.current.push(e.data);
+      };
+      rec.onstop = async () => {
+        try {
+          mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
+          mediaStreamRef.current = null;
+          const blob = new Blob(audioChunksRef.current, { type: mimeType });
+          audioChunksRef.current = [];
+          if (blob.size < 400) {
+            toast.error('Mensaje muy corto. Mantén el botón e intenta otra vez.');
+            return;
+          }
+          setTranscribing(true);
+          const text = await sttApi.transcribe(blob, 'audio.webm');
+          if (!text || !text.trim()) {
+            toast.error('No te escuché bien, mi amor. Repite.');
+            return;
+          }
+          sendText(text.trim());
+        } catch (e) {
+          toast.error(String(e.message || 'Elena no pudo escucharte.').slice(0, 160));
+        } finally {
+          setTranscribing(false);
+        }
+      };
+      rec.start();
+      setRecording(true);
+    } catch (e) {
+      toast.error('No pude acceder al micrófono. Da permiso en el navegador.');
+    }
+  };
+
+  const stopRecording = () => {
+    if (!recording) return;
+    setRecording(false);
+    try {
+      recorderRef.current?.stop();
+    } catch { /* ignore */ }
+  };
+
+  useEffect(() => {
+    return () => {
+      try {
+        recorderRef.current?.stop();
+      } catch { /* ignore */ }
+      mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
+    };
+  }, []);
+
   return (
     <div
       data-testid={CHAT.container}
@@ -261,14 +399,43 @@ export default function ChatPanel({ onSpeakingChange, onThinkingChange, onElenaR
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={onKeyDown}
-            disabled={sending}
-            placeholder="Dile algo íntimo a Elena…"
+            disabled={sending || recording || transcribing}
+            placeholder={
+              recording
+                ? 'Escuchándote… suelta para enviar'
+                : transcribing
+                ? 'Transcribiendo tu voz…'
+                : 'Dile algo íntimo a Elena…'
+            }
             className="flex-1 bg-transparent outline-none text-sm font-body placeholder:text-[color:var(--lounge-text-muted)]/60"
           />
           <button
+            data-testid={CHAT.micButton}
+            onMouseDown={startRecording}
+            onMouseUp={stopRecording}
+            onMouseLeave={() => recording && stopRecording()}
+            onTouchStart={(e) => { e.preventDefault(); startRecording(); }}
+            onTouchEnd={(e) => { e.preventDefault(); stopRecording(); }}
+            disabled={sending || transcribing}
+            title={recording ? 'Suelta para enviar' : 'Mantén presionado y habla'}
+            className={
+              recording
+                ? 'rounded-full bg-red-500 text-white w-9 h-9 flex items-center justify-center transition-transform scale-110'
+                : 'rounded-full bg-white/5 border border-white/10 text-[color:var(--lounge-gold)] hover:border-[color:var(--lounge-gold)]/50 w-9 h-9 flex items-center justify-center disabled:opacity-40 transition-transform hover:scale-105'
+            }
+          >
+            {transcribing ? (
+              <Loader2 className="w-4 h-4 animate-spin" strokeWidth={1.6} />
+            ) : recording ? (
+              <Square className="w-4 h-4 fill-current" strokeWidth={1.6} />
+            ) : (
+              <Mic className="w-4 h-4" strokeWidth={1.6} />
+            )}
+          </button>
+          <button
             data-testid={CHAT.sendButton}
             onClick={send}
-            disabled={sending || !input.trim()}
+            disabled={sending || recording || transcribing || !input.trim()}
             className="rounded-full bg-[color:var(--lounge-gold)] text-black w-9 h-9 flex items-center justify-center hover:bg-[color:var(--lounge-gold-bright)] disabled:opacity-40 transition-transform hover:scale-105"
           >
             {sending ? (

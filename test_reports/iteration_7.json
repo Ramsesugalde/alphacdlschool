@@ -1,0 +1,27 @@
+{
+  "summary": "Iteration 7 validates the new WhatsApp outbound-call feature ('Elena me llama'). Backend: 7/7 pytest passed in /app/backend/tests/test_whatsapp.py — GET /api/whatsapp/config unauth->401; authed with intentionally-empty env returns 200 with configured:false, missing includes ELEVENLABS_WHATSAPP_PHONE_NUMBER_ID + ELEVENLABS_WHATSAPP_TEMPLATE_NAME, agent_id='agent_8301ka4g11aceyrs4fyk6xpypege', template_lang='es_MX'. POST /api/whatsapp/call unauth->401; authed but missing env->503 with detail 'WhatsApp outbound no configurado. Falta: ...' listing the two missing vars. Fully-configured scenario simulated in-process via monkeypatch(env)+importlib.reload(server)+monkeypatch(httpx.AsyncClient) — asserted POST fires to https://api.elevenlabs.io/v1/convai/whatsapp/outbound-call with xi-api-key header from ELEVENLABS_API_KEY, and JSON body containing whatsapp_phone_number_id, whatsapp_user_id, whatsapp_call_permission_request_template_name, whatsapp_call_permission_request_template_language_code, agent_id and conversation_initiation_client_data.conversation_config_override.{agent.first_message, tts.voice_id}. Verified to_number defaults to BRYAN_WA_USER_ID when body.to_number omitted. Verified 400 'Falta el número de WhatsApp de destino.' when both empty. NO real network call made to ElevenLabs Convai (mocked). Frontend: Playwright with seeded session cookie against real /dashboard — wa-call-button rendered inside ActionPanel below foto/video buttons with 'Elena me llama' label and PhoneCall icon; when backend reports configured:false button is disabled with opacity-40 class and title exactly 'Falta configurar: ELEVENLABS_WHATSAPP_PHONE_NUMBER_ID, ELEVENLABS_WHATSAPP_TEMPLATE_NAME'. With Playwright route interception forcing /api/whatsapp/config -> configured:true default_to:'+16823588132', button becomes enabled (title 'Elena te llama al WhatsApp'), clicking fires exactly 1 POST /api/whatsapp/call with body {to_number:'+16823588132'}. Regression: voice-selector-trigger (label 'Sarah'), voice-toggle-button still present and functional; chat panel renders Elena greeting. No console errors besides expected 401s during pre-auth resource load.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_whatsapp.py",
+    "/app/test_reports/pytest/iter7_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py L890-900 _wa_missing() correctly reports ELEVENLABS_API_KEY as missing too — good defensive check even though key is currently set.",
+    "server.py L917-969 /api/whatsapp/call builds a spec-compliant payload matching ElevenLabs docs (whatsapp_phone_number_id, whatsapp_user_id, permission-request template fields, agent_id, conversation_initiation_client_data). Language defaults to 'es' inside conversation_config_override which is separate from template language_code — correct per docs.",
+    "ActionPanel.jsx L92-109 requestCall correctly guards on !waConfig?.configured && callInFlight, disables the button during flight, and surfaces upstream 503 detail via toast (slice(0,160) protects UI).",
+    "ActionPanel.jsx L153-172 renders only when waConfig has loaded — avoids flash of disabled-with-no-tooltip state. Good.",
+    "server.py L978 CORS allow_origins reads env but defaults to '*' with allow_credentials=True — this combo is disallowed by browsers (cookies not sent). Currently works because Emergent ingress rewrites, but recommend setting CORS_ORIGINS to explicit preview URL in prod hardening (not blocking).",
+    "server.py: file is 989 lines and starting to hold multiple concerns (auth/chat/media/D-ID/TTS/WhatsApp). Recommend splitting per-feature routers once WhatsApp/D-ID stabilise (not blocking).",
+    "Minor: /api/whatsapp/call does not enforce that authenticated user == AUTHORIZED_EMAIL — relies on session validity. Since /api/auth/session already gates by AUTHORIZED_EMAIL this is safe, but adding an explicit assert in get_current_user or a dedicated require_bryan() helper would harden other endpoints too."
+  ],
+  "updated_files": ["/app/backend/tests/test_whatsapp.py"],
+  "success_rate": {"backend": "100% (7/7)", "frontend": "100% (3/3 phases: disabled state, enabled+POST, regression)"},
+  "test_credentials": "AUTHORIZED_EMAIL=bryanugalde290@gmail.com. Backend tests seed a temp mongo user+session per module; frontend uses a separately seeded session cookie. Both cleaned post-run.",
+  "seed_data_creation": "test-user-wa-* (backend, module-scoped, auto-cleaned via fixture teardown); test-user-fe-wa-* (frontend, manually cleaned post-run via mongosh).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "New regression file: /app/backend/tests/test_whatsapp.py covers the WhatsApp Convai outbound endpoints (config + call, unauth/missing-config/fully-mocked). Run all backend regression: pytest /app/backend/tests -v. The fully-configured scenario relies on importlib.reload(server) + monkeypatch(httpx.AsyncClient) so the real ElevenLabs endpoint is NEVER hit. When Bryan provisions the real whatsapp_phone_number_id + template_name, drop them into /app/backend/.env and the existing 'missing' tests will need their expected 'missing' list adjusted (or gated behind an env-driven skip).",
+  "rca of the issue": "N/A — feature works as designed."
+}
