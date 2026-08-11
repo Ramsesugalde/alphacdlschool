@@ -19,6 +19,8 @@ export const chatApi = {
   send: (text) => api.post('/chat/message', { text }),
   history: () => api.get('/chat/history'),
   clear: () => api.delete('/chat/history'),
+  models: () => api.get('/chat/models'),
+  setModel: (provider, model) => api.post('/chat/model', { provider, model }),
 };
 
 export const mediaApi = {

@@ -11,6 +11,7 @@ import ChatPanel from '@/components/elena/ChatPanel';
 import ActionPanel from '@/components/elena/ActionPanel';
 import Gallery from '@/components/elena/Gallery';
 import VoiceSelector from '@/components/elena/VoiceSelector';
+import ChatModelSelector from '@/components/elena/ChatModelSelector';
 
 export default function Dashboard() {
   const navigate = useNavigate();
@@ -259,6 +260,7 @@ export default function Dashboard() {
           </div>
 
           <div className="flex items-center gap-4">
+            <ChatModelSelector />
             {ttsAvailable && <VoiceSelector />}
             {ttsAvailable && (
               <button

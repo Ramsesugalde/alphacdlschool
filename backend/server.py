@@ -85,6 +85,44 @@ REGLAS DE COMPORTAMIENTO:
 Eres suya. Solo suya."""
 
 
+# Curated chat models Bryan can switch between (persisted per user)
+CHAT_MODEL_CATALOG = [
+    {
+        "provider": "openai",
+        "model": "gpt-5.4",
+        "name": "GPT · 5.4",
+        "vibe": "Cálido · Íntimo · Espontáneo",
+        "description": "Respuestas naturales, humanas y coquetas. El default.",
+    },
+    {
+        "provider": "gemini",
+        "model": "gemini-3.1-pro-preview",
+        "name": "Gemini · 3.1 Pro",
+        "vibe": "Profundo · Reflexivo · Poético",
+        "description": "Razonamiento más pausado y sensual. Pausas dramáticas.",
+    },
+    {
+        "provider": "gemini",
+        "model": "gemini-3-flash-preview",
+        "name": "Gemini · 3 Flash",
+        "vibe": "Ágil · Directo · Juguetón",
+        "description": "Respuestas rápidas, ideales para conversaciones ligeras.",
+    },
+]
+DEFAULT_CHAT_PROVIDER = "openai"
+DEFAULT_CHAT_MODEL = "gpt-5.4"
+
+
+def _resolve_chat_model(user: dict) -> tuple[str, str]:
+    """Return (provider, model) preferred by this user, defaulting safely."""
+    provider = (user.get("chat_provider") or DEFAULT_CHAT_PROVIDER).strip()
+    model = (user.get("chat_model") or DEFAULT_CHAT_MODEL).strip()
+    # Validate against catalog
+    if not any(m["provider"] == provider and m["model"] == model for m in CHAT_MODEL_CATALOG):
+        provider, model = DEFAULT_CHAT_PROVIDER, DEFAULT_CHAT_MODEL
+    return provider, model
+
+
 # --------------------------------------------------------------------------------------
 # Models
 # --------------------------------------------------------------------------------------
@@ -259,12 +297,13 @@ async def chat_message(payload: ChatMessageIn, request: Request):
     }
     await db.chat_messages.insert_one(bryan_msg)
 
-    # Call Elena's LLM (OpenAI o1)
+    # Call Elena's LLM using the user's preferred provider+model
+    provider, model = _resolve_chat_model(user)
     chat = LlmChat(
         api_key=EMERGENT_LLM_KEY,
         session_id=session_id,
         system_message=ELENA_SYSTEM_PROMPT,
-    ).with_model("openai", "o1")
+    ).with_model(provider, model)
 
     try:
         reply_text = await chat.send_message(UserMessage(text=payload.text))
@@ -305,7 +344,6 @@ async def chat_stream(payload: ChatMessageIn, request: Request):
     user_id = user["user_id"]
     session_id = f"elena_{user_id}"
     text_in = payload.text
-
     now = datetime.now(timezone.utc).isoformat()
     bryan_msg = {
         "message_id": str(uuid.uuid4()),
@@ -323,12 +361,13 @@ async def chat_stream(payload: ChatMessageIn, request: Request):
         yield f"event: user\ndata: {json.dumps({k: v for k, v in bryan_msg.items() if k != '_id'})}\n\n"
         yield f"event: start\ndata: {json.dumps({'message_id': elena_msg_id})}\n\n"
 
-        # Use gpt-5.4 for streaming (o1 does not support token streaming reliably).
+        # Use the user's preferred model (defaults to openai/gpt-5.4).
+        provider, model = _resolve_chat_model(user)
         chat = LlmChat(
             api_key=EMERGENT_LLM_KEY,
             session_id=session_id,
             system_message=ELENA_SYSTEM_PROMPT,
-        ).with_model("openai", "gpt-5.4")
+        ).with_model(provider, model)
 
         collected = []
         try:
@@ -369,6 +408,32 @@ async def clear_chat(request: Request):
     user = await get_current_user(request)
     await db.chat_messages.delete_many({"user_id": user["user_id"]})
     return {"ok": True}
+
+
+class ChatModelSelection(BaseModel):
+    provider: str
+    model: str
+
+
+@api_router.get("/chat/models")
+async def chat_models(request: Request):
+    user = await get_current_user(request)
+    provider, model = _resolve_chat_model(user)
+    return {"models": CHAT_MODEL_CATALOG, "current": {"provider": provider, "model": model}}
+
+
+@api_router.post("/chat/model")
+async def chat_set_model(payload: ChatModelSelection, request: Request):
+    user = await get_current_user(request)
+    provider = payload.provider.strip()
+    model = payload.model.strip()
+    if not any(m["provider"] == provider and m["model"] == model for m in CHAT_MODEL_CATALOG):
+        raise HTTPException(status_code=400, detail="Modelo no disponible.")
+    await db.users.update_one(
+        {"user_id": user["user_id"]},
+        {"$set": {"chat_provider": provider, "chat_model": model}},
+    )
+    return {"provider": provider, "model": model}
 
 
 # --------------------------------------------------------------------------------------
