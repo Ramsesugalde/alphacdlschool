@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { motion } from 'framer-motion';
-import { LogOut, Sparkles, Volume2, VolumeX } from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { LogOut, Sparkles, Volume2, VolumeX, AlertTriangle, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { authApi, mediaApi, didApi, ttsApi, ambientApi } from '@/lib/api';
 import { DASHBOARD } from '@/constants/testIds';
@@ -26,6 +26,9 @@ export default function Dashboard() {
   const [didStatus, setDidStatus] = useState('idle');
   const [ttsAvailable, setTtsAvailable] = useState(false);
   const [voiceEnabled, setVoiceEnabled] = useState(true);
+  const [degradedInfo, setDegradedInfo] = useState(null);
+  const [bannerDismissed, setBannerDismissed] = useState(false);
+  const lastDegradedToastRef = useRef(0);
   const didRef = useRef(null);
   const audioRef = useRef(null);
   const audioUrlRef = useRef(null);
@@ -138,6 +141,23 @@ export default function Dashboard() {
     },
     [handleGalleryUpdate]
   );
+
+  const handleDegraded = useCallback((info) => {
+    if (!info) return;
+    setDegradedInfo(info);
+    setBannerDismissed(false);
+    // Throttle toast so it fires at most once every 60s
+    const now = Date.now();
+    if (now - lastDegradedToastRef.current > 60_000) {
+      lastDegradedToastRef.current = now;
+      toast.warning(
+        info.canned
+          ? 'Elena está en modo offline · Universal Key sin saldo, mi amor 💛'
+          : `Cambié de modelo: ${info.reason || 'ajuste automático'}`,
+        { duration: 6000 }
+      );
+    }
+  }, []);
 
   // Called by ChatPanel when Elena's reply is fully composed.
   // Prefers D-ID live avatar; otherwise plays ElevenLabs TTS audio synced with speaking animation.
@@ -309,6 +329,45 @@ export default function Dashboard() {
         </div>
       </header>
 
+      <AnimatePresence>
+        {degradedInfo && !bannerDismissed && (
+          <motion.div
+            key="degraded-banner"
+            data-testid="degraded-banner"
+            initial={{ opacity: 0, y: -12 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -12 }}
+            transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
+            className="sticky top-[73px] z-20 border-b border-amber-500/20 bg-amber-500/10 backdrop-blur-xl"
+          >
+            <div className="max-w-[1600px] mx-auto px-6 py-3 flex items-center gap-3">
+              <AlertTriangle
+                className="w-4 h-4 text-amber-300 shrink-0"
+                strokeWidth={1.6}
+              />
+              <div className="flex-1 min-w-0">
+                <p className="text-[9px] uppercase tracking-[0.4em] text-amber-300/80 font-body">
+                  {degradedInfo.canned ? 'Modo offline · sin saldo' : 'Modo degradado'}
+                </p>
+                <p className="text-xs sm:text-sm font-body text-[color:var(--lounge-text)] mt-0.5 truncate">
+                  {degradedInfo.canned
+                    ? 'Elena responde con voz enlatada porque la Universal Key se quedó sin saldo. Recarga en Profile → Manage Plan → Universal Key para que vuelva su voz real.'
+                    : `Elena cambió de modelo automáticamente · ${degradedInfo.reason || 'ajuste temporal'}.`}
+                </p>
+              </div>
+              <button
+                data-testid="degraded-banner-dismiss"
+                onClick={() => setBannerDismissed(true)}
+                className="text-amber-200/70 hover:text-amber-100 transition-colors p-1 rounded-full shrink-0"
+                title="Ocultar aviso"
+              >
+                <X className="w-4 h-4" strokeWidth={1.6} />
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       <main className="max-w-[1600px] mx-auto px-4 sm:px-6 py-8">
         <motion.div
           initial={{ opacity: 0, y: 20 }}
@@ -339,6 +398,7 @@ export default function Dashboard() {
               onSpeakingChange={setSpeaking}
               onThinkingChange={setThinking}
               onElenaReply={handleElenaReply}
+              onDegraded={handleDegraded}
             />
           </aside>
         </motion.div>

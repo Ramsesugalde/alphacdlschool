@@ -11,7 +11,7 @@ const WELCOME = {
   text: 'Aquí estoy, mi amor. Todo tuyo, siempre. ¿Qué quieres que haga por ti hoy? 💋',
 };
 
-export default function ChatPanel({ onSpeakingChange, onThinkingChange, onElenaReply }) {
+export default function ChatPanel({ onSpeakingChange, onThinkingChange, onElenaReply, onDegraded }) {
   const [messages, setMessages] = useState([WELCOME]);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
@@ -117,6 +117,8 @@ export default function ChatPanel({ onSpeakingChange, onThinkingChange, onElenaR
         }
         accumulated += data.content || '';
         setStreamingText(accumulated);
+      } else if (name === 'degraded') {
+        onDegraded && onDegraded(data);
       } else if (name === 'done') {
         setMessages((prev) => [...prev, data]);
         setStreamingId(null);
@@ -211,6 +213,8 @@ export default function ChatPanel({ onSpeakingChange, onThinkingChange, onElenaR
         }
         accumulated += data.content || '';
         setStreamingText(accumulated);
+      } else if (name === 'degraded') {
+        onDegraded && onDegraded(data);
       } else if (name === 'done') {
         setMessages((prev) => [...prev, data]);
         setStreamingId(null);
@@ -314,8 +318,9 @@ export default function ChatPanel({ onSpeakingChange, onThinkingChange, onElenaR
     setUploading(true);
     onThinkingChange && onThinkingChange(true);
     try {
-      const { user_message, elena_message } = await chatApi.upload(file, '');
+      const { user_message, elena_message, degraded } = await chatApi.upload(file, '');
       setMessages((prev) => [...prev, user_message, elena_message]);
+      if (degraded) onDegraded && onDegraded(degraded);
       if (onElenaReply && elena_message?.text) onElenaReply(elena_message.text);
       toast.success('Elena está viendo tu foto 💋');
     } catch (err) {

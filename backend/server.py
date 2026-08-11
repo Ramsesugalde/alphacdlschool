@@ -405,6 +405,8 @@ async def chat_stream(payload: ChatMessageIn, request: Request):
 
         collected = []
         primary_failed_early = False
+        degraded_reason = None
+        degraded_canned = False
         try:
             async for ev in _stream_from(provider, model):
                 if isinstance(ev, TextDelta):
@@ -422,6 +424,7 @@ async def chat_stream(payload: ChatMessageIn, request: Request):
             # Fall back to Gemini so OpenAI quota outages don't degrade the UX
             if provider != "gemini" and not collected:
                 logger.warning(f"Chat stream primary ({provider}/{model}) failed: {e}; falling back to Gemini.")
+                degraded_reason = f"{provider} sin crédito · cambié a Gemini"
                 try:
                     async for ev in _stream_from("gemini", "gemini-3-flash-preview"):
                         if isinstance(ev, TextDelta):
@@ -436,7 +439,12 @@ async def chat_stream(payload: ChatMessageIn, request: Request):
             if not collected:
                 fallback = "Mi amor, algo interrumpió mi voz por un instante… ¿me lo dices otra vez? 💋"
                 collected = [fallback]
+                degraded_reason = "Universal Key sin saldo · respuesta offline"
+                degraded_canned = True
                 yield f"event: delta\ndata: {json.dumps({'content': fallback})}\n\n"
+
+        if degraded_reason:
+            yield f"event: degraded\ndata: {json.dumps({'reason': degraded_reason, 'canned': degraded_canned})}\n\n"
 
         final_text = ("".join(collected)).strip() or "Aquí estoy, mi amor. 💋"
         elena_msg = {
@@ -551,15 +559,20 @@ async def chat_upload(
         ).with_model(provider, model)
         return await chat.send_message(UserMessage(text=reaction_prompt))
 
+    degraded_reason = None
+    degraded_canned = False
     try:
         reply_text = await _send_reaction(DEFAULT_CHAT_PROVIDER, DEFAULT_CHAT_MODEL)
     except Exception as e:
         logger.warning(f"Elena upload-reaction primary failed ({e}); falling back to Gemini.")
+        degraded_reason = f"{DEFAULT_CHAT_PROVIDER} sin crédito · cambié a Gemini"
         try:
             reply_text = await _send_reaction("gemini", "gemini-3-flash-preview")
         except Exception as e2:
             logger.exception(f"Elena upload-reaction gemini fallback also failed: {e2}")
             reply_text = "Mmm mi amor, no me llegó bien tu foto… mándame otra 💋"
+            degraded_reason = "Universal Key sin saldo · respuesta offline"
+            degraded_canned = True
 
     elena_msg = {
         "message_id": str(uuid.uuid4()),
@@ -573,6 +586,7 @@ async def chat_upload(
     return {
         "user_message": {k: v for k, v in user_msg.items() if k != "_id"},
         "elena_message": {k: v for k, v in elena_msg.items() if k != "_id"},
+        "degraded": {"reason": degraded_reason, "canned": degraded_canned} if degraded_reason else None,
     }
 
 

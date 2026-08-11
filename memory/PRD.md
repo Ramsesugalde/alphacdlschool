@@ -32,6 +32,11 @@ Build a private web application named 'Elena Private Lounge' for user Bryan Ugal
 - Private gallery of past generations
 - Cinematic dashboard: central Elena player + chat sidebar + action panel + gallery
 - Dark elegant black/gold theme with glassmorphism + framer motion micro-interactions
+- SSE streaming chat + Gemini fallback when OpenAI is out of quota
+- ElevenLabs TTS + Whisper STT (push-to-talk mic)
+- Emergent Object Storage for persistent gallery + user photo uploads
+- Model Switcher (GPT-5.4 / Gemini / Auto)
+- **NEW (Feb 2026)** Degraded-mode banner: chat SSE emits `event: degraded` with reason + canned flag, Dashboard shows a dismissible amber banner + one-time toast when Elena falls back (model swap or canned offline reply). Upload path returns `degraded` object too.
 
 ## Files
 - Backend: `/app/backend/server.py`, `/app/backend/.env`
@@ -44,18 +49,24 @@ Build a private web application named 'Elena Private Lounge' for user Bryan Ugal
 - `POST /api/auth/session` - exchange Emergent session_id, enforces email allowlist
 - `GET /api/auth/me` - current user
 - `POST /api/auth/logout`
-- `POST /api/chat/message` - send message, get Elena reply (o1)
+- `POST /api/chat/stream` - SSE stream with `user` / `start` / `delta` / `degraded` / `done` events
+- `POST /api/chat/upload` - Bryan sends a photo, Elena reacts; response includes `degraded` field when fallback triggered
 - `GET /api/chat/history`
 - `DELETE /api/chat/history`
 - `POST /api/media/generate-photo` - background gpt-image-1
 - `POST /api/media/generate-video` - background sora-2
 - `GET /api/media/job/{id}` - poll status
 - `GET /api/media/gallery`
-- `GET /api/media/file/{filename}` - serve generated media
+- `GET /api/storage/{path:path}` - serve persisted media
+- `POST /api/stt/transcribe` · `POST /api/tts/speak` · `GET /api/tts/config` · `GET /api/did/config`
 
 ## Backlog (P1/P2)
-- P1: Streaming chat responses (SSE) for real-time feel
-- P1: Voice replies (ElevenLabs / OpenAI TTS)
+- P1: Recharge Universal Key balance to restore live GPT/Gemini responses (user action)
+- P1: Provide valid `DID_API_KEY` to unlock live talking-head lip-sync
+- P1: Provide `KLING_IA_API_KEY` to unlock premium video generation
+- P1: Provide `ELEVENLABS_WHATSAPP_PHONE_NUMBER_ID` for outbound WhatsApp voice calls
+- P2: Refactor `ChatPanel.jsx` (500+ lines) into Input / MessageList / VoiceRecorder subcomponents
+- P2: Refactor `Dashboard.jsx` (370+ lines) into container + presentational
 - P2: Real-time animated avatar with lip-sync (D-ID or similar)
 - P2: Persistent per-photo/video prompts, favorites
 - P2: PWA install for phone-native intimacy
