@@ -49,14 +49,20 @@ export default function Dashboard() {
     didApi
       .config()
       .then(({ data }) => setDidAvailable(!!data.configured))
-      .catch(() => setDidAvailable(false));
+      .catch((err) => {
+        console.warn('[Dashboard] didApi.config failed', err);
+        setDidAvailable(false);
+      });
     ttsApi
       .config()
       .then(({ data }) => setTtsAvailable(!!data.configured))
-      .catch(() => setTtsAvailable(false));
+      .catch((err) => {
+        console.warn('[Dashboard] ttsApi.config failed', err);
+        setTtsAvailable(false);
+      });
 
     // Trigger idle ambient Sora 2 clip if Bryan has none yet (idempotent server-side)
-    ambientApi.ensure().catch(() => {});
+    ambientApi.ensure().catch((err) => console.warn('[Dashboard] ambientApi.ensure failed', err));
 
     mediaApi
       .gallery()
@@ -70,7 +76,7 @@ export default function Dashboard() {
           });
         }
       })
-      .catch(() => {});
+      .catch((err) => console.warn('[Dashboard] mediaApi.gallery failed', err));
   }, [checking, currentMedia]);
 
   // Poll for ambient video completion (only if we still have no video showing)

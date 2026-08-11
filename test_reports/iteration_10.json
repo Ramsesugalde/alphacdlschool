@@ -1,0 +1,42 @@
+{
+  "summary": "Iteration 10 validates the three new features: (1) Emergent Object Storage persistence, (2) 'auto' chat model auto-switch, and (3) POST /api/chat/upload photo sharing. Backend: 11/11 pytest passed in /app/backend/tests/test_upload_storage_auto.py — GET /api/chat/models returns exactly 4 catalog items with index 0 being {provider:auto, model:auto, name:'Auto · Elena elige'}; POST /api/chat/model with {provider:auto, model:auto} returns 200 and persists chat_provider/chat_model in db.users; POST /api/chat/stream with user.chat_provider='auto' streams >=1 delta + event:done for both a SHORT message ('ja jaja' → routed to gemini-3-flash-preview by _auto_pick) and a LONG emotional message (routed to gemini-3.1-pro-preview) within <15s each; /api/chat/upload returns 401 without auth, 422 with no file field, 400 with detail 'Solo fotos, mi amor.' for text/plain files, and 200 for a valid 4x4 PNG (generated via struct+zlib) with the exact response shape: user_message.role='user', text='(te compartí una foto)', attachment_type='image', attachment_url starts with '/api/storage/elena-lounge/', plus message_id/user_id/created_at; both user_message and elena_message are persisted in db.chat_messages; /api/storage/{path} returns 401 without auth and 200 with Content-Type image/png and non-empty body (73 bytes echoed back exactly) with valid session — verified via BOTH the freshly-uploaded chat path AND a manually-seeded media_jobs storage_path (proving the regression contract for /api/media/generate-photo). Frontend (Playwright, seeded session cookie on /dashboard): all critical selectors present — chat-upload-button (ImagePlus icon), chat-upload-input (hidden file input), chat-mic-button, chat-send-button, chat-clear-button, voice-selector-trigger, voice-toggle-button, wa-call-button, chat-model-selector-trigger. Model selector opens to reveal exactly 4 options including data-testid='chat-model-selector-option-auto-auto' with label 'Auto · Elena elige' and its vibe/description block. Simulating page.set_input_files on chat-upload-input with a 73-byte PNG fires exactly 1 POST /api/chat/upload; on success the chat gains 2 new bubbles (user + elena) — the user bubble renders an <img> whose src is REACT_APP_BACKEND_URL + '/api/storage/elena-lounge/<uid>/upload/upload_*.png' via mediaApi.fileUrl, and the sonner toast 'Elena está viendo tu foto 💋' is shown. Full end-to-end 3-feature integration confirmed.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/chat/upload", "issue": "OpenAI GPT-5.4 currently returns 409 'Daily spend limit reached' (external quota on EMERGENT_LLM_KEY today). The Elena upload-reaction call catches the exception and gracefully returns fallback text 'Mmm mi amor, no me llegó bien tu foto… mándame otra 💋' (still >5 chars so contract holds). Not a code bug — external quota. Consider using _auto_pick / Gemini fallback inside chat_upload so quota exhaustion on GPT-5.4 doesn't degrade the photo-reaction copy."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_upload_storage_auto.py",
+    "/app/test_reports/pytest/iter10_upload_storage.xml"
+  ],
+  "action_items": [
+    "OPTIONAL: In /api/chat/upload, when GPT-5.4 send_message throws (e.g. 409 daily_limit_reached), retry once via gemini-3-flash-preview before falling back to canned string — otherwise on quota-exhaustion days users see a generic 'no me llegó bien tu foto' instead of a real reaction."
+  ],
+  "critical_code_review_comments": [
+    "server.py L143-153 _resolve_chat_model correctly short-circuits on provider=='auto' → _auto_pick(text). The heuristic keyword lists (_AUTO_FLASH_HINTS / _AUTO_PRO_HINTS) are Spanish-first and case-insensitive; the len(<30) short-message rule catches 'ja jaja' before the substring check.",
+    "server.py L469-545 chat_upload: excellent input validation order (empty→400, >20MB→413, non-image→400 with exact 'Solo fotos, mi amor.' detail), correct storage.build_path namespacing (elena-lounge/<uid>/upload/upload_<12hex>.<ext>), and both user_msg and elena_msg are persisted BEFORE returning — no orphan writes if LLM fails. Response strips _id via dict comprehension.",
+    "server.py L521 chat_upload intentionally hardcodes DEFAULT_CHAT_PROVIDER/DEFAULT_CHAT_MODEL (openai/gpt-5.4) for the reaction rather than honoring the user's chat_provider. Comment explains 'send_message compatibility varies across providers.' Reasonable, but during quota outages on OpenAI it degrades — see action item.",
+    "server.py L771-780 /api/storage/{path:path} uses Starlette wildcard, requires auth for every fetch (private-by-default), returns Cache-Control private/max-age=300, and 404s on any storage.get_object exception. Solid.",
+    "server.py L577-580 and L637-640 photo/video generation gracefully catch storage.put_object failure and fall back to disk (MEDIA_DIR) — good defensive coding for a new persistence layer.",
+    "storage_client.py L38-56 put_object retries once with init_storage(force=True) on 403/404 — handles transient storage-key expiry. Same pattern in get_object.",
+    "ChatPanel.jsx L302-327 handleFileChosen: client-side pre-validation (image/* + 20MB) matches server-side; resets input.value before await so the same file can be re-picked; disables sending during upload; toast success/error copy is user-friendly.",
+    "ChatPanel.jsx L384-390 renders <img src={mediaApi.fileUrl(m.attachment_url)}> for messages with attachment_type='image' — correctly prepends REACT_APP_BACKEND_URL to the /api/storage/... path so browser routes through auth-cookie-carrying origin.",
+    "Regression: server.py stays at 1249 lines. The earlier recommendation to split routers per feature (chat/media/storage/whatsapp) remains a nice-to-have but not blocking."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_upload_storage_auto.py (new)"
+  ],
+  "success_rate": {"backend": "100% (11/11 including real Emergent Object Storage put+get and real Gemini streaming for auto-routing)", "frontend": "100% (upload button + hidden input, 4-option catalog with auto, POST /api/chat/upload fired, user+elena bubbles rendered, <img> from /api/storage, toast, all regression selectors)"},
+  "test_credentials": "AUTHORIZED_EMAIL=bryanugalde290@gmail.com; sessions seeded per test module in Mongo and cleaned in teardown. Frontend test cookie also cleaned post-run.",
+  "seed_data_creation": "Backend: test-user-iter10-* (module-scoped, auto-cleaned). Frontend: test-user-fe-iter10-* (cleaned via mongosh after run).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "New regression file /app/backend/tests/test_upload_storage_auto.py exercises the three iteration-10 features against REAL Emergent Object Storage + REAL Gemini via EMERGENT_LLM_KEY. It generates a tiny 73-byte PNG on the fly (struct+zlib, no external assets) so it's free to run. The last test test_storage_serves_media_job_file must be run with -n0 OR with load_dotenv('/app/backend/.env') already active in worker (already patched — the test now loads dotenv itself before importing storage_client). Auto-routing keyword lists live in server.py L126-130 — 'ja' and 'hola' trigger Flash; 'siento', 'extraño', 'corazón' trigger Pro. Note: today's EMERGENT_LLM_KEY is at OpenAI daily-quota (409 daily_limit_reached) — this only affects the hardcoded GPT-5.4 call inside /api/chat/upload; Gemini streaming still works and all backend tests still pass because the fallback copy '(no me llegó bien tu foto…)' is >5 chars.",
+  "rca of the issue": "N/A — no bugs. External observation: OpenAI 5.4 currently returns 409 'daily_limit_reached' via litellm/emergentintegrations; the app handles it gracefully via try/except with a canned fallback message, so /api/chat/upload never 500s. If E1 wants richer reactions during quota outages, route chat_upload through _auto_pick() or Gemini flash as a secondary provider before falling back to the canned string."
+}

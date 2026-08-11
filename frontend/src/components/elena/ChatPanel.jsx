@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Send, Trash2, Loader2, Mic, Square } from 'lucide-react';
+import { Send, Trash2, Loader2, Mic, Square, ImagePlus } from 'lucide-react';
 import { toast } from 'sonner';
-import { chatApi, sttApi, API } from '@/lib/api';
+import { chatApi, sttApi, mediaApi, API } from '@/lib/api';
 import { CHAT } from '@/constants/testIds';
 
 const WELCOME = {
@@ -19,6 +19,8 @@ export default function ChatPanel({ onSpeakingChange, onThinkingChange, onElenaR
   const [streamingText, setStreamingText] = useState('');
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef(null);
   const scrollRef = useRef(null);
   const abortRef = useRef(null);
   const recorderRef = useRef(null);
@@ -291,6 +293,39 @@ export default function ChatPanel({ onSpeakingChange, onThinkingChange, onElenaR
     } catch { /* ignore */ }
   };
 
+  // Photo upload — Bryan shares a picture, Elena reacts inline
+  const onPickFile = () => {
+    if (uploading || sending) return;
+    fileInputRef.current?.click();
+  };
+
+  const handleFileChosen = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      toast.error('Solo fotos, mi amor.');
+      return;
+    }
+    if (file.size > 20 * 1024 * 1024) {
+      toast.error('La foto es muy grande (máx 20MB).');
+      return;
+    }
+    setUploading(true);
+    onThinkingChange && onThinkingChange(true);
+    try {
+      const { user_message, elena_message } = await chatApi.upload(file, '');
+      setMessages((prev) => [...prev, user_message, elena_message]);
+      if (onElenaReply && elena_message?.text) onElenaReply(elena_message.text);
+      toast.success('Elena está viendo tu foto 💋');
+    } catch (err) {
+      toast.error(String(err.message || 'Falló la subida').slice(0, 160));
+    } finally {
+      setUploading(false);
+      onThinkingChange && onThinkingChange(false);
+    }
+  };
+
   useEffect(() => {
     return () => {
       try {
@@ -346,6 +381,14 @@ export default function ChatPanel({ onSpeakingChange, onThinkingChange, onElenaR
                     : 'max-w-[85%] bg-white/5 border border-white/10 text-[color:var(--lounge-text)] rounded-2xl rounded-bl-sm px-4 py-3 font-body text-sm leading-relaxed'
                 }
               >
+                {m.attachment_url && m.attachment_type === 'image' && (
+                  <img
+                    src={mediaApi.fileUrl(m.attachment_url)}
+                    alt="foto"
+                    className="mb-2 rounded-xl max-h-56 w-auto border border-black/20"
+                    draggable={false}
+                  />
+                )}
                 {m.text}
               </div>
             </motion.div>
@@ -393,18 +436,41 @@ export default function ChatPanel({ onSpeakingChange, onThinkingChange, onElenaR
       </div>
 
       <div className="p-4 border-t border-white/5">
+        <input
+          data-testid={CHAT.uploadInput}
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          onChange={handleFileChosen}
+          className="hidden"
+        />
         <div className="flex items-center gap-2 bg-black/40 border border-white/10 focus-within:border-[color:var(--lounge-gold)]/50 rounded-full px-4 py-2 transition-colors">
+          <button
+            data-testid={CHAT.uploadButton}
+            onClick={onPickFile}
+            disabled={sending || uploading || recording || transcribing}
+            title="Compartir una foto con Elena"
+            className="rounded-full bg-white/5 border border-white/10 text-[color:var(--lounge-gold)] hover:border-[color:var(--lounge-gold)]/50 w-9 h-9 flex items-center justify-center disabled:opacity-40 transition-transform hover:scale-105"
+          >
+            {uploading ? (
+              <Loader2 className="w-4 h-4 animate-spin" strokeWidth={1.6} />
+            ) : (
+              <ImagePlus className="w-4 h-4" strokeWidth={1.6} />
+            )}
+          </button>
           <input
             data-testid={CHAT.input}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={onKeyDown}
-            disabled={sending || recording || transcribing}
+            disabled={sending || recording || transcribing || uploading}
             placeholder={
               recording
                 ? 'Escuchándote… suelta para enviar'
                 : transcribing
                 ? 'Transcribiendo tu voz…'
+                : uploading
+                ? 'Enviando tu foto a Elena…'
                 : 'Dile algo íntimo a Elena…'
             }
             className="flex-1 bg-transparent outline-none text-sm font-body placeholder:text-[color:var(--lounge-text-muted)]/60"

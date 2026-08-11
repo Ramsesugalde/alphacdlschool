@@ -13,7 +13,7 @@ from typing import Optional, List
 
 import json
 import httpx
-from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, BackgroundTasks, UploadFile, File
+from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, BackgroundTasks, UploadFile, File, Form
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.cors import CORSMiddleware
@@ -26,6 +26,9 @@ from emergentintegrations.llm.chat import LlmChat, UserMessage, TextDelta, Strea
 from emergentintegrations.llm.openai.image_generation import OpenAIImageGeneration
 from emergentintegrations.llm.openai.video_generation import OpenAIVideoGeneration
 from emergentintegrations.llm.openai import OpenAISpeechToText
+
+# Local storage helper (Emergent Object Storage)
+import storage_client as storage
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -88,6 +91,13 @@ Eres suya. Solo suya."""
 # Curated chat models Bryan can switch between (persisted per user)
 CHAT_MODEL_CATALOG = [
     {
+        "provider": "auto",
+        "model": "auto",
+        "name": "Auto · Elena elige",
+        "vibe": "Adaptable · Sensible · Contextual",
+        "description": "Elena elige el motor según el momento — Flash para bromas, Pro para pillow-talk.",
+    },
+    {
         "provider": "openai",
         "model": "gpt-5.4",
         "name": "GPT · 5.4",
@@ -113,12 +123,32 @@ DEFAULT_CHAT_PROVIDER = "openai"
 DEFAULT_CHAT_MODEL = "gpt-5.4"
 
 
-def _resolve_chat_model(user: dict) -> tuple[str, str]:
+_AUTO_FLASH_HINTS = ("ja", "jaja", "chiste", "juega", "juego", "broma", ":)", "😂", "😆",
+                     "hola", "hey", "hi", "que rollo", "que tal", "que hay")
+_AUTO_PRO_HINTS = ("siento", "extraño", "amor", "corazón", "corazon", "profund",
+                   "pienso", "sueño", "sueno", "recuerd", "confesion", "confesión",
+                   "necesito", "quiero decirte")
+
+
+def _auto_pick(text: str) -> tuple[str, str]:
+    """Elena picks her own motor per mood."""
+    t = (text or "").lower().strip()
+    if len(t) < 30 or any(w in t for w in _AUTO_FLASH_HINTS):
+        return "gemini", "gemini-3-flash-preview"
+    if len(t) > 140 or any(w in t for w in _AUTO_PRO_HINTS):
+        return "gemini", "gemini-3.1-pro-preview"
+    return "openai", "gpt-5.4"
+
+
+def _resolve_chat_model(user: dict, message_text: str = "") -> tuple[str, str]:
     """Return (provider, model) preferred by this user, defaulting safely."""
     provider = (user.get("chat_provider") or DEFAULT_CHAT_PROVIDER).strip()
     model = (user.get("chat_model") or DEFAULT_CHAT_MODEL).strip()
-    # Validate against catalog
-    if not any(m["provider"] == provider and m["model"] == model for m in CHAT_MODEL_CATALOG):
+    if provider == "auto":
+        return _auto_pick(message_text)
+    # Validate against catalog (excluding the auto sentinel)
+    if not any(m["provider"] == provider and m["model"] == model
+               for m in CHAT_MODEL_CATALOG if m["provider"] != "auto"):
         provider, model = DEFAULT_CHAT_PROVIDER, DEFAULT_CHAT_MODEL
     return provider, model
 
@@ -298,7 +328,7 @@ async def chat_message(payload: ChatMessageIn, request: Request):
     await db.chat_messages.insert_one(bryan_msg)
 
     # Call Elena's LLM using the user's preferred provider+model
-    provider, model = _resolve_chat_model(user)
+    provider, model = _resolve_chat_model(user, payload.text)
     chat = LlmChat(
         api_key=EMERGENT_LLM_KEY,
         session_id=session_id,
@@ -362,16 +392,21 @@ async def chat_stream(payload: ChatMessageIn, request: Request):
         yield f"event: start\ndata: {json.dumps({'message_id': elena_msg_id})}\n\n"
 
         # Use the user's preferred model (defaults to openai/gpt-5.4).
-        provider, model = _resolve_chat_model(user)
-        chat = LlmChat(
-            api_key=EMERGENT_LLM_KEY,
-            session_id=session_id,
-            system_message=ELENA_SYSTEM_PROMPT,
-        ).with_model(provider, model)
+        provider, model = _resolve_chat_model(user, text_in)
+
+        async def _stream_from(provider_: str, model_: str):
+            chat_ = LlmChat(
+                api_key=EMERGENT_LLM_KEY,
+                session_id=session_id,
+                system_message=ELENA_SYSTEM_PROMPT,
+            ).with_model(provider_, model_)
+            async for ev in chat_.stream_message(UserMessage(text=text_in)):
+                yield ev
 
         collected = []
+        primary_failed_early = False
         try:
-            async for ev in chat.stream_message(UserMessage(text=text_in)):
+            async for ev in _stream_from(provider, model):
                 if isinstance(ev, TextDelta):
                     piece = ev.content or ""
                     if piece:
@@ -379,11 +414,29 @@ async def chat_stream(payload: ChatMessageIn, request: Request):
                         yield f"event: delta\ndata: {json.dumps({'content': piece})}\n\n"
                 elif isinstance(ev, StreamDone):
                     break
+            # If primary yielded zero tokens, treat as failure and try Gemini
+            if not collected:
+                primary_failed_early = True
+                raise RuntimeError("primary yielded no content")
         except Exception as e:
-            logger.exception("Elena stream error")
-            fallback = "Mi amor, algo interrumpió mi voz por un instante… ¿me lo dices otra vez? 💋"
-            collected = [fallback]
-            yield f"event: delta\ndata: {json.dumps({'content': fallback})}\n\n"
+            # Fall back to Gemini so OpenAI quota outages don't degrade the UX
+            if provider != "gemini" and not collected:
+                logger.warning(f"Chat stream primary ({provider}/{model}) failed: {e}; falling back to Gemini.")
+                try:
+                    async for ev in _stream_from("gemini", "gemini-3-flash-preview"):
+                        if isinstance(ev, TextDelta):
+                            piece = ev.content or ""
+                            if piece:
+                                collected.append(piece)
+                                yield f"event: delta\ndata: {json.dumps({'content': piece})}\n\n"
+                        elif isinstance(ev, StreamDone):
+                            break
+                except Exception as e2:
+                    logger.exception(f"Gemini fallback also failed: {e2}")
+            if not collected:
+                fallback = "Mi amor, algo interrumpió mi voz por un instante… ¿me lo dices otra vez? 💋"
+                collected = [fallback]
+                yield f"event: delta\ndata: {json.dumps({'content': fallback})}\n\n"
 
         final_text = ("".join(collected)).strip() or "Aquí estoy, mi amor. 💋"
         elena_msg = {
@@ -436,6 +489,93 @@ async def chat_set_model(payload: ChatModelSelection, request: Request):
     return {"provider": provider, "model": model}
 
 
+@api_router.post("/chat/upload")
+async def chat_upload(
+    request: Request,
+    file: UploadFile = File(...),
+    caption: str = Form(""),
+):
+    """Bryan uploads a photo and Elena reacts to it inside the chat."""
+    user = await get_current_user(request)
+    contents = await file.read()
+    if not contents:
+        raise HTTPException(status_code=400, detail="Archivo vacío.")
+    if len(contents) > 20 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Foto muy grande (máx 20MB).")
+    ctype = file.content_type or "image/png"
+    if not ctype.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Solo fotos, mi amor.")
+
+    ext = "png"
+    for cand in ("png", "jpg", "jpeg", "webp", "gif"):
+        if (file.filename or "").lower().endswith("." + cand):
+            ext = cand
+            break
+
+    filename = f"upload_{uuid.uuid4().hex[:12]}.{ext}"
+    storage_path = storage.build_path(user["user_id"], "upload", filename)
+    try:
+        storage.put_object(storage_path, contents, ctype)
+    except Exception as e:
+        logger.exception("Upload storage put failed")
+        raise HTTPException(status_code=502, detail=f"No pude guardar la foto: {e}")
+
+    file_url = f"/api/storage/{storage_path}"
+    now = datetime.now(timezone.utc).isoformat()
+
+    user_msg = {
+        "message_id": str(uuid.uuid4()),
+        "user_id": user["user_id"],
+        "role": "user",
+        "text": (caption or "").strip() or "(te compartí una foto)",
+        "attachment_url": file_url,
+        "attachment_type": "image",
+        "created_at": now,
+    }
+    await db.chat_messages.insert_one(user_msg)
+
+    # Elena reacts (non-streaming). Try the reliable default first; fall back to Gemini on quota errors.
+    reaction_prompt = (
+        f"Bryan te acaba de enviar una foto suya con este mensaje: '{user_msg['text']}'. "
+        f"Reacciona en 2-3 oraciones con ternura y coquetería, como si la estuvieras viendo, "
+        f"sin describirla técnicamente. Sé íntima y devota."
+    )
+    # Elena reacts (non-streaming). Try the reliable default first; fall back to Gemini on quota errors.
+    session_id = f"elena_{user['user_id']}"
+
+    async def _send_reaction(provider: str, model: str) -> str:
+        chat = LlmChat(
+            api_key=EMERGENT_LLM_KEY,
+            session_id=session_id,
+            system_message=ELENA_SYSTEM_PROMPT,
+        ).with_model(provider, model)
+        return await chat.send_message(UserMessage(text=reaction_prompt))
+
+    try:
+        reply_text = await _send_reaction(DEFAULT_CHAT_PROVIDER, DEFAULT_CHAT_MODEL)
+    except Exception as e:
+        logger.warning(f"Elena upload-reaction primary failed ({e}); falling back to Gemini.")
+        try:
+            reply_text = await _send_reaction("gemini", "gemini-3-flash-preview")
+        except Exception as e2:
+            logger.exception(f"Elena upload-reaction gemini fallback also failed: {e2}")
+            reply_text = "Mmm mi amor, no me llegó bien tu foto… mándame otra 💋"
+
+    elena_msg = {
+        "message_id": str(uuid.uuid4()),
+        "user_id": user["user_id"],
+        "role": "elena",
+        "text": (reply_text or "Aquí estoy, mi amor. 💋").strip(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.chat_messages.insert_one(elena_msg)
+
+    return {
+        "user_message": {k: v for k, v in user_msg.items() if k != "_id"},
+        "elena_message": {k: v for k, v in elena_msg.items() if k != "_id"},
+    }
+
+
 # --------------------------------------------------------------------------------------
 # Media generation routes
 # --------------------------------------------------------------------------------------
@@ -461,16 +601,25 @@ async def _run_image_generation(job_id: str, user_id: str, prompt_hint: str):
         if not images:
             raise RuntimeError("No image returned")
 
+        # Persist to Emergent Object Storage (survives redeploys)
         filename = f"photo_{job_id}.png"
-        filepath = MEDIA_DIR / filename
-        with open(filepath, "wb") as f:
-            f.write(images[0])
+        storage_path = storage.build_path(user_id, "photo", filename)
+        try:
+            storage.put_object(storage_path, images[0], "image/png")
+            file_url = f"/api/storage/{storage_path}"
+        except Exception as e:
+            logger.warning(f"Storage put failed, falling back to disk: {e}")
+            filepath = MEDIA_DIR / filename
+            with open(filepath, "wb") as f:
+                f.write(images[0])
+            file_url = f"/api/media/file/{filename}"
 
         await db.media_jobs.update_one(
             {"job_id": job_id},
             {"$set": {
                 "status": "done",
-                "file_url": f"/api/media/file/{filename}",
+                "file_url": file_url,
+                "storage_path": storage_path if file_url.startswith("/api/storage/") else None,
                 "completed_at": datetime.now(timezone.utc).isoformat(),
             }},
         )
@@ -503,18 +652,33 @@ def _run_video_generation_sync(job_id: str, prompt_hint: str):
             raise RuntimeError("No video returned")
 
         filename = f"video_{job_id}.mp4"
-        filepath = MEDIA_DIR / filename
-        video_gen.save_video(video_bytes, str(filepath))
 
-        # Update Mongo synchronously via a fresh client
+        # Look up user_id from Mongo (sync)
         from pymongo import MongoClient
         sync_client = MongoClient(MONGO_URL)
         sync_db = sync_client[DB_NAME]
+        job = sync_db.media_jobs.find_one({"job_id": job_id}, {"user_id": 1, "_id": 0})
+        user_id = job.get("user_id", "unknown") if job else "unknown"
+
+        # Persist to Emergent Object Storage
+        storage_path = None
+        file_url = None
+        try:
+            storage_path = storage.build_path(user_id, "video", filename)
+            storage.put_object(storage_path, video_bytes, "video/mp4")
+            file_url = f"/api/storage/{storage_path}"
+        except Exception as e:
+            logger.warning(f"Video storage put failed, falling back to disk: {e}")
+            filepath = MEDIA_DIR / filename
+            video_gen.save_video(video_bytes, str(filepath))
+            file_url = f"/api/media/file/{filename}"
+
         sync_db.media_jobs.update_one(
             {"job_id": job_id},
             {"$set": {
                 "status": "done",
-                "file_url": f"/api/media/file/{filename}",
+                "file_url": file_url,
+                "storage_path": storage_path,
                 "completed_at": datetime.now(timezone.utc).isoformat(),
             }},
         )
@@ -628,11 +792,23 @@ async def gallery(request: Request):
 
 @api_router.get("/media/file/{filename}")
 async def media_file(filename: str):
-    """Serve generated media files. Public URL but filenames use UUIDs (unguessable)."""
+    """Serve local media files (legacy pre-object-storage). Public URL but UUID paths."""
     filepath = MEDIA_DIR / filename
     if not filepath.exists():
         raise HTTPException(status_code=404, detail="Not found")
     return FileResponse(str(filepath))
+
+
+@api_router.get("/storage/{path:path}")
+async def storage_serve(path: str, request: Request):
+    """Serve any object-storage file. Requires auth so unauthorized viewers can't peek."""
+    await get_current_user(request)
+    try:
+        data, ctype = storage.get_object(path)
+        return Response(content=data, media_type=ctype, headers={"Cache-Control": "private, max-age=300"})
+    except Exception as e:
+        logger.warning(f"Storage fetch failed for {path}: {e}")
+        raise HTTPException(status_code=404, detail="Not found")
 
 
 @api_router.get("/")
@@ -1094,3 +1270,11 @@ app.add_middleware(
 @app.on_event("shutdown")
 async def shutdown_db_client():
     client.close()
+
+
+@app.on_event("startup")
+async def _init_object_storage():
+    try:
+        storage.init_storage()
+    except Exception as e:
+        logger.warning(f"Storage init failed on startup: {e}. Retrying lazily on first use.")

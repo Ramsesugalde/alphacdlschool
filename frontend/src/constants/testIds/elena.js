@@ -23,6 +23,8 @@ export const CHAT = {
   sendButton: 'chat-send-button',
   clearButton: 'chat-clear-button',
   micButton: 'chat-mic-button',
+  uploadButton: 'chat-upload-button',
+  uploadInput: 'chat-upload-input',
   message: (id) => `chat-message-${id}`,
 };
 

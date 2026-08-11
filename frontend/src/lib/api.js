@@ -21,6 +21,28 @@ export const chatApi = {
   clear: () => api.delete('/chat/history'),
   models: () => api.get('/chat/models'),
   setModel: (provider, model) => api.post('/chat/model', { provider, model }),
+  upload: async (file, caption = '') => {
+    const form = new FormData();
+    form.append('file', file);
+    form.append('caption', caption);
+    const res = await fetch(`${API}/chat/upload`, {
+      method: 'POST',
+      credentials: 'include',
+      body: form,
+    });
+    if (!res.ok) {
+      let d = 'Falló la subida';
+      try { d = (await res.json()).detail || d; } catch (parseErr) {
+        console.warn('[chatApi.upload] non-JSON error body', parseErr);
+      }
+      throw new Error(d);
+    }
+    return res.json();
+  },
+};
+
+export const storageApi = {
+  url: (path) => (path && path.startsWith('/') ? `${API.replace(/\/api$/, '')}${path}` : path),
 };
 
 export const mediaApi = {
@@ -81,7 +103,9 @@ export const sttApi = {
       let detail = 'Transcripción falló';
       try {
         detail = (await res.json()).detail || detail;
-      } catch { /* ignore */ }
+      } catch (parseErr) {
+        console.warn('[sttApi] non-JSON error body', parseErr);
+      }
       throw new Error(detail);
     }
     return (await res.json()).text;
